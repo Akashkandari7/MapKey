@@ -1,0 +1,28 @@
+# secrets
+.env
+
+# environments / dependencies
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+
+# third-party clone (we copy what we reuse into pipeline/, with licences)
+vendor/
+
+# the client's material: never in a public repo
+inputs/
+style/analysis/
+style/frames/
+style/contact_sheets/
+style/transcripts/
+
+# generated per episode
+work/
+output/
+
+# big / rebuildable geo data (python -m pipeline.geo.build_layers recreates layers.gpkg + names.json)
+data/geo/raw/
+data/geo/cache/
+data/geo/layers.gpkg
+data/geo/names.json

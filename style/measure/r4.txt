@@ -1,0 +1,3 @@
+inputs/reference_reels/4.mp4: 422 samples, 2 segments
+    0.00- 42.00  other    zoom x0.968  pan [np.float64(0.148), np.float64(0.562)]
+   42.00- 42.20  other    zoom x1.001  pan [np.float64(-0.0), np.float64(0.0)]

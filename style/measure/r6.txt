@@ -1,0 +1,4 @@
+inputs/reference_reels/6.mp4: 477 samples, 3 segments
+    0.00- 34.03  other    zoom x3.728  pan [np.float64(0.347), np.float64(-0.041)]
+   34.03- 46.65  facecam  zoom x0.922  pan [np.float64(-0.028), np.float64(-0.048)]
+   46.65- 47.75  facecam  zoom x1.27   pan [np.float64(0.071), np.float64(0.047)]

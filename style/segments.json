@@ -1,0 +1,18 @@
+{
+  "_note": "Segment kinds per reference reel, checked by eye against the 1 fps sheets. Starts/ends come from measure.py cuts; kinds corrected where the face detector was fooled (r3 0.8-2.5 is the globe intro, r5 0.6-2.5 is a news photo of a politician, not the creator).",
+  "r1": [{"start": 0.0, "end": 33.73, "kind": "map"}, {"start": 33.73, "end": 50.94, "kind": "facecam"}],
+  "r2": [{"start": 0.0, "end": 11.41, "kind": "map"}, {"start": 11.41, "end": 15.52, "kind": "broll"},
+         {"start": 15.52, "end": 25.53, "kind": "map"}, {"start": 25.53, "end": 31.53, "kind": "broll"},
+         {"start": 31.53, "end": 38.44, "kind": "map"}, {"start": 38.44, "end": 45.82, "kind": "facecam"}],
+  "r3": [{"start": 0.0, "end": 8.6, "kind": "map"}, {"start": 8.6, "end": 10.1, "kind": "facecam"},
+         {"start": 10.1, "end": 14.1, "kind": "map"}, {"start": 14.1, "end": 18.3, "kind": "facecam"},
+         {"start": 18.3, "end": 29.7, "kind": "map"}, {"start": 29.7, "end": 35.8, "kind": "facecam"},
+         {"start": 35.8, "end": 39.9, "kind": "broll"}, {"start": 39.9, "end": 47.0, "kind": "map"},
+         {"start": 47.0, "end": 50.0, "kind": "facecam"}, {"start": 50.0, "end": 52.7, "kind": "map"},
+         {"start": 52.7, "end": 55.15, "kind": "facecam"}],
+  "r4": [{"start": 0.0, "end": 42.28, "kind": "map"}],
+  "r5": [{"start": 0.0, "end": 0.6, "kind": "map"}, {"start": 0.6, "end": 2.8, "kind": "broll"},
+         {"start": 2.8, "end": 30.8, "kind": "map"}, {"start": 30.8, "end": 33.1, "kind": "broll"},
+         {"start": 33.1, "end": 40.8, "kind": "map"}, {"start": 40.8, "end": 46.32, "kind": "facecam"}],
+  "r6": [{"start": 0.0, "end": 34.03, "kind": "map"}, {"start": 34.03, "end": 47.83, "kind": "facecam"}]
+}

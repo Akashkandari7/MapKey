@@ -1,0 +1,112 @@
+{
+ "r1": {
+  "loudness": {
+   "integrated_lufs": -14.1,
+   "lra": 1.1,
+   "true_peak_dbfs": -2.8
+  },
+  "speech_db": -17.1,
+  "gap_db": null,
+  "bed_below_db": null,
+  "gaps": 0,
+  "gap_has_music": null,
+  "hits": []
+ },
+ "r2": {
+  "loudness": {
+   "integrated_lufs": -14.2,
+   "lra": 1.4,
+   "true_peak_dbfs": -2.3
+  },
+  "speech_db": -17.3,
+  "gap_db": null,
+  "bed_below_db": null,
+  "gaps": 0,
+  "gap_has_music": null,
+  "hits": [
+   {
+    "t": 1.24,
+    "strength": 4.33,
+    "near_move_s": 0.74,
+    "near_cut_s": 10.17
+   },
+   {
+    "t": 21.36,
+    "strength": 4.9,
+    "near_move_s": 2.34,
+    "near_cut_s": 4.16
+   }
+  ]
+ },
+ "r3": {
+  "loudness": {
+   "integrated_lufs": -14.3,
+   "lra": 3.1,
+   "true_peak_dbfs": -0.0
+  },
+  "speech_db": -16.9,
+  "gap_db": null,
+  "bed_below_db": null,
+  "gaps": 0,
+  "gap_has_music": null,
+  "hits": []
+ },
+ "r4": {
+  "loudness": {
+   "integrated_lufs": -14.1,
+   "lra": 2.0,
+   "true_peak_dbfs": -2.8
+  },
+  "speech_db": -17.0,
+  "gap_db": -20.7,
+  "bed_below_db": 3.8,
+  "gaps": 1,
+  "gap_has_music": 1.0,
+  "hits": [
+   {
+    "t": 4.18,
+    "strength": 5.66,
+    "near_move_s": 0.88,
+    "near_cut_s": 37.82
+   },
+   {
+    "t": 32.61,
+    "strength": 3.82,
+    "near_move_s": 3.79,
+    "near_cut_s": 9.39
+   },
+   {
+    "t": 33.7,
+    "strength": 6.37,
+    "near_move_s": 2.7,
+    "near_cut_s": 8.3
+   }
+  ]
+ },
+ "r5": {
+  "loudness": {
+   "integrated_lufs": -14.1,
+   "lra": 1.6,
+   "true_peak_dbfs": -1.0
+  },
+  "speech_db": -17.2,
+  "gap_db": null,
+  "bed_below_db": null,
+  "gaps": 0,
+  "gap_has_music": null,
+  "hits": []
+ },
+ "r6": {
+  "loudness": {
+   "integrated_lufs": -14.1,
+   "lra": 1.2,
+   "true_peak_dbfs": -2.3
+  },
+  "speech_db": -17.1,
+  "gap_db": null,
+  "bed_below_db": null,
+  "gaps": 0,
+  "gap_has_music": null,
+  "hits": []
+ }
+}

@@ -1,0 +1,482 @@
+{
+ "r1": {
+  "accents": [
+   {
+    "hex": "#E4000B",
+    "share": 0.266
+   },
+   {
+    "hex": "#F5FA18",
+    "share": 0.216
+   },
+   {
+    "hex": "#BB0B18",
+    "share": 0.108
+   },
+   {
+    "hex": "#ECEA43",
+    "share": 0.104
+   },
+   {
+    "hex": "#8B8332",
+    "share": 0.07
+   },
+   {
+    "hex": "#C0B83A",
+    "share": 0.069
+   },
+   {
+    "hex": "#983733",
+    "share": 0.059
+   },
+   {
+    "hex": "#33ED2E",
+    "share": 0.055
+   },
+   {
+    "hex": "#BA544D",
+    "share": 0.045
+   },
+   {
+    "hex": "#D9037B",
+    "share": 0.008
+   }
+  ],
+  "accent_pixel_share": 0.0284,
+  "basemap": {
+   "brightness_mean": 0.319,
+   "brightness_median": 0.298,
+   "saturation_mean": 0.246,
+   "tones": [
+    {
+     "hex": "#3C3A2C",
+     "share": 0.342
+    },
+    {
+     "hex": "#26251B",
+     "share": 0.277
+    },
+    {
+     "hex": "#514C3C",
+     "share": 0.226
+    },
+    {
+     "hex": "#726F58",
+     "share": 0.096
+    },
+    {
+     "hex": "#948E76",
+     "share": 0.059
+    }
+   ]
+  },
+  "vignette_rel": [
+   1.0,
+   0.954,
+   0.795,
+   0.588,
+   0.418,
+   0.26
+  ]
+ },
+ "r2": {
+  "accents": [
+   {
+    "hex": "#11749D",
+    "share": 0.313
+   },
+   {
+    "hex": "#0F6185",
+    "share": 0.299
+   },
+   {
+    "hex": "#1689B8",
+    "share": 0.204
+   },
+   {
+    "hex": "#3A7FA1",
+    "share": 0.05
+   },
+   {
+    "hex": "#F4E418",
+    "share": 0.038
+   },
+   {
+    "hex": "#43B3CC",
+    "share": 0.031
+   },
+   {
+    "hex": "#D0C539",
+    "share": 0.022
+   },
+   {
+    "hex": "#67ED78",
+    "share": 0.016
+   },
+   {
+    "hex": "#9C8631",
+    "share": 0.016
+   },
+   {
+    "hex": "#B73A94",
+    "share": 0.011
+   }
+  ],
+  "accent_pixel_share": 0.1575,
+  "basemap": {
+   "brightness_mean": 0.26,
+   "brightness_median": 0.208,
+   "saturation_mean": 0.486,
+   "tones": [
+    {
+     "hex": "#0D1511",
+     "share": 0.532
+    },
+    {
+     "hex": "#252A1A",
+     "share": 0.256
+    },
+    {
+     "hex": "#454436",
+     "share": 0.124
+    },
+    {
+     "hex": "#07384F",
+     "share": 0.07
+    },
+    {
+     "hex": "#C8E2E8",
+     "share": 0.018
+    }
+   ]
+  },
+  "vignette_rel": [
+   1.0,
+   0.878,
+   0.713,
+   0.594,
+   0.5,
+   0.388
+  ]
+ },
+ "r3": {
+  "accents": [
+   {
+    "hex": "#3A7D84",
+    "share": 0.363
+   },
+   {
+    "hex": "#E50004",
+    "share": 0.319
+   },
+   {
+    "hex": "#F1FF0C",
+    "share": 0.188
+   },
+   {
+    "hex": "#AE0516",
+    "share": 0.039
+   },
+   {
+    "hex": "#8C01F0",
+    "share": 0.038
+   },
+   {
+    "hex": "#942B3E",
+    "share": 0.014
+   },
+   {
+    "hex": "#31DAF6",
+    "share": 0.013
+   },
+   {
+    "hex": "#D0E941",
+    "share": 0.012
+   },
+   {
+    "hex": "#7F9A37",
+    "share": 0.008
+   },
+   {
+    "hex": "#C24D5F",
+    "share": 0.005
+   }
+  ],
+  "accent_pixel_share": 0.2064,
+  "basemap": {
+   "brightness_mean": 0.411,
+   "brightness_median": 0.357,
+   "saturation_mean": 0.586,
+   "tones": [
+    {
+     "hex": "#0E3F4F",
+     "share": 0.494
+    },
+    {
+     "hex": "#275566",
+     "share": 0.249
+    },
+    {
+     "hex": "#141423",
+     "share": 0.128
+    },
+    {
+     "hex": "#606C58",
+     "share": 0.091
+    },
+    {
+     "hex": "#D8CBBC",
+     "share": 0.038
+    }
+   ]
+  },
+  "vignette_rel": [
+   1.0,
+   0.912,
+   0.839,
+   0.747,
+   0.687,
+   0.651
+  ]
+ },
+ "r4": {
+  "accents": [
+   {
+    "hex": "#008BFE",
+    "share": 0.811
+   },
+   {
+    "hex": "#2179B4",
+    "share": 0.056
+   },
+   {
+    "hex": "#2980BB",
+    "share": 0.049
+   },
+   {
+    "hex": "#1870AB",
+    "share": 0.025
+   },
+   {
+    "hex": "#1285E3",
+    "share": 0.024
+   },
+   {
+    "hex": "#3589C5",
+    "share": 0.014
+   },
+   {
+    "hex": "#3C7696",
+    "share": 0.008
+   },
+   {
+    "hex": "#15568B",
+    "share": 0.007
+   },
+   {
+    "hex": "#52A2DB",
+    "share": 0.003
+   },
+   {
+    "hex": "#F62D2F",
+    "share": 0.002
+   }
+  ],
+  "accent_pixel_share": 0.369,
+  "basemap": {
+   "brightness_mean": 0.3,
+   "brightness_median": 0.2,
+   "saturation_mean": 0.618,
+   "tones": [
+    {
+     "hex": "#021322",
+     "share": 0.531
+    },
+    {
+     "hex": "#716B54",
+     "share": 0.216
+    },
+    {
+     "hex": "#8F8872",
+     "share": 0.12
+    },
+    {
+     "hex": "#4D5139",
+     "share": 0.113
+    },
+    {
+     "hex": "#E9EDF2",
+     "share": 0.02
+    }
+   ]
+  },
+  "vignette_rel": [
+   1.0,
+   0.889,
+   0.709,
+   0.532,
+   0.431,
+   0.396
+  ]
+ },
+ "r5": {
+  "accents": [
+   {
+    "hex": "#1DC02A",
+    "share": 0.321
+   },
+   {
+    "hex": "#33D03C",
+    "share": 0.161
+   },
+   {
+    "hex": "#0C91B9",
+    "share": 0.157
+   },
+   {
+    "hex": "#087197",
+    "share": 0.112
+   },
+   {
+    "hex": "#58D858",
+    "share": 0.066
+   },
+   {
+    "hex": "#D8F133",
+    "share": 0.044
+   },
+   {
+    "hex": "#67862C",
+    "share": 0.042
+   },
+   {
+    "hex": "#B30A0C",
+    "share": 0.042
+   },
+   {
+    "hex": "#ABD84F",
+    "share": 0.036
+   },
+   {
+    "hex": "#7230B2",
+    "share": 0.019
+   }
+  ],
+  "accent_pixel_share": 0.1255,
+  "basemap": {
+   "brightness_mean": 0.183,
+   "brightness_median": 0.153,
+   "saturation_mean": 0.066,
+   "tones": [
+    {
+     "hex": "#2A2A29",
+     "share": 0.422
+    },
+    {
+     "hex": "#171717",
+     "share": 0.289
+    },
+    {
+     "hex": "#40413E",
+     "share": 0.205
+    },
+    {
+     "hex": "#61665C",
+     "share": 0.079
+    },
+    {
+     "hex": "#C9DBBC",
+     "share": 0.006
+    }
+   ]
+  },
+  "vignette_rel": [
+   1.0,
+   0.681,
+   0.45,
+   0.307,
+   0.218,
+   0.147
+  ]
+ },
+ "r6": {
+  "accents": [
+   {
+    "hex": "#EB51AA",
+    "share": 0.449
+   },
+   {
+    "hex": "#DC5BA2",
+    "share": 0.199
+   },
+   {
+    "hex": "#C55B94",
+    "share": 0.106
+   },
+   {
+    "hex": "#A94F80",
+    "share": 0.072
+   },
+   {
+    "hex": "#8A4168",
+    "share": 0.061
+   },
+   {
+    "hex": "#EFCE20",
+    "share": 0.041
+   },
+   {
+    "hex": "#C8A939",
+    "share": 0.022
+   },
+   {
+    "hex": "#2EF728",
+    "share": 0.021
+   },
+   {
+    "hex": "#937A2C",
+    "share": 0.018
+   },
+   {
+    "hex": "#3CAC33",
+    "share": 0.011
+   }
+  ],
+  "accent_pixel_share": 0.0293,
+  "basemap": {
+   "brightness_mean": 0.241,
+   "brightness_median": 0.239,
+   "saturation_mean": 0.23,
+   "tones": [
+    {
+     "hex": "#464436",
+     "share": 0.311
+    },
+    {
+     "hex": "#353426",
+     "share": 0.29
+    },
+    {
+     "hex": "#222217",
+     "share": 0.227
+    },
+    {
+     "hex": "#595448",
+     "share": 0.166
+    },
+    {
+     "hex": "#F2F1ED",
+     "share": 0.005
+    }
+   ]
+  },
+  "vignette_rel": [
+   1.0,
+   1.054,
+   0.916,
+   0.722,
+   0.554,
+   0.361
+  ]
+ }
+}
