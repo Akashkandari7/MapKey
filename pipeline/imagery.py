@@ -75,17 +75,23 @@ def build(bbox, res_m, out, dates=DEFAULT_DATES, per_tile=4, force=False):
     grid = from_origin(x0, y0 + h * res_m, res_m, res_m)  # our output grid; the VRT warps each scene onto it
     env = rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", AWS_NO_SIGN_REQUEST="YES",
                        GDAL_HTTP_MULTIRANGE="YES", GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES", VSI_CACHE="TRUE")
-    with env:
-        for it in chosen:
-            href = it.assets["visual"].href
+    def read(it):
+        with env:
             try:
-                with rasterio.open(href) as src, WarpedVRT(src, crs="EPSG:3857", transform=grid, width=w, height=h,
-                                                           src_nodata=0, nodata=0, resampling=Resampling.average) as vrt:
+                with rasterio.open(it.assets["visual"].href) as src, WarpedVRT(
+                        src, crs="EPSG:3857", transform=grid, width=w, height=h, src_nodata=0, nodata=0,
+                        resampling=Resampling.average) as vrt:
                     arr = vrt.read(indexes=[1, 2, 3])
-                stack.append(arr)
                 print(f"   {it.id} cloud {it.properties['eo:cloud_cover']:.2f}")
+                return arr
             except Exception as e:  # noqa: BLE001  (one bad scene must not sink the mosaic)
                 print(f"   skip {it.id}: {e}", file=sys.stderr)
+                return None
+
+    # 3 scenes at a time: network-bound, and keeps the laptop's CPU mostly free
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(3) as ex:
+        stack = [a for a in ex.map(read, chosen) if a is not None]
     data = np.stack(stack).astype(np.float32)          # scenes x 3 x h x w
     valid = data.sum(axis=1, keepdims=True) > 0         # 0,0,0 = outside the scene footprint
     data = np.where(valid, data, np.nan)
@@ -104,8 +110,20 @@ def build(bbox, res_m, out, dates=DEFAULT_DATES, per_tile=4, force=False):
     return meta
 
 
-def for_view(bbox, res_m):
-    """Cached path for a bbox/resolution (rounded so nearby requests share a file)."""
+def for_view(bbox, res_m, need=None):
+    """Cached path for a bbox/resolution. An existing mosaic at the same resolution that already covers `need` (the area
+    the camera really sees; default the bbox) is reused: a re-planned camera usually moves a little, and that must not
+    trigger another download. New downloads use the full (padded) bbox."""
+    need = need or bbox
+    for meta_f in sorted(CACHE.glob("s2_*.json")):
+        try:
+            m = json.loads(meta_f.read_text())
+        except ValueError:
+            continue
+        b = m.get("bbox_lonlat")
+        if m.get("res_m") == res_m and b and b[0] <= need[0] and b[1] <= need[1] and b[2] >= need[2] and b[3] >= need[3] \
+                and meta_f.with_suffix(".jpg").exists():
+            return meta_f.with_suffix("")
     b = [round(v, 3) for v in bbox]
     return CACHE / f"s2_{sha(b, res_m)}"
 

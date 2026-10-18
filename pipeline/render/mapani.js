@@ -11,6 +11,8 @@ const MAPANI = (() => {
 
   // ---------- easing (keep in sync with EASES in pipeline/plan.py) ----------
   const EASE = {
+    // easeOutSine with a soft (C1) start over the first 20 %: no jolt when a move begins during the drift
+    softOutSine: u => { const a = .2, g = u < a ? u * u / (2 * a) : u - a / 2; return Math.sin(Math.PI / 2 * g / (1 - a / 2)); },
     linear: u => u,
     easeOutSine: u => Math.sin(u * Math.PI / 2),
     easeInOutSine: u => -(Math.cos(Math.PI * u) - 1) / 2,
@@ -48,8 +50,12 @@ const MAPANI = (() => {
   // ---------- assets ----------
   const IMG = {};
   async function setup() {
+    // createImageBitmap, not img.decode(): Chrome defers decode() in background tabs, and render.mjs runs several
+    // tabs in parallel; a deferred decode left a worker waiting forever for window.ready
     for (const lv of SCENES.imagery || []) {
-      const im = new Image(); im.src = lv.file; await im.decode(); IMG[lv.file] = im;
+      const im = new Image();
+      await new Promise((ok, bad) => { im.onload = ok; im.onerror = () => bad(new Error('basemap failed to load: ' + lv.file)); im.src = lv.file; });
+      IMG[lv.file] = await createImageBitmap(im);
     }
     // per-geometry cumulative lengths for progressive route drawing
     for (const g of Object.values(SCENES.geometry)) if (g.kind === 'line') {
@@ -140,9 +146,11 @@ const MAPANI = (() => {
     g.fillStyle = tint.color; g.fill(polyPath(g, c, SCENES.geometry[L.geom]), 'evenodd'); g.restore();
   }
 
-  function font(styleTok) {
-    const f = TOKENS.fonts[styleTok.font];
-    return `${f.style || 'normal'} ${f.weight} ${styleTok.size}px "${f.family}"`;
+  // sets font + letter spacing (tokens tracking is in em) on a context
+  function setFont(g, styleTok, sizePx) {
+    const f = TOKENS.fonts[styleTok.font], s = sizePx ?? styleTok.size;
+    g.font = `${f.style || 'normal'} ${f.weight} ${s}px "${f.family}"`;
+    g.letterSpacing = `${((f.tracking || 0) * s).toFixed(2)}px`;
   }
   function typed(text, t, tin, dur) {
     const u = Math.min(1, Math.max(0, (t - tin) / dur));
@@ -157,32 +165,53 @@ const MAPANI = (() => {
     const sh = LOOK().stat.shadow;
     g.shadowColor = rgba(sh.color, sh.opacity); g.shadowBlur = sh.blur; g.shadowOffsetY = sh.offset_y;
   }
+  // dark halo first (stroke under the fill), then the coloured text with its drop shadow, as in r1
+  function haloText(g, txt, x, y, sizePx, outline) {
+    if (outline) {
+      g.save(); g.shadowColor = 'transparent'; g.lineJoin = 'round';
+      g.lineWidth = outline.width_em * sizePx; g.strokeStyle = rgba(outline.color, outline.opacity);
+      g.strokeText(txt, x, y); g.restore();
+    }
+    g.fillText(txt, x, y);
+  }
 
-  function drawTitle(g, L, t) {
+  // Text either sits on the screen (x, y) or lives on the map (X, Y world point + mpp_in = zoom when it appeared):
+  // map text scales with the camera, as in the reference reels.
+  function anchorOf(c, L) {
+    if (L.X === undefined) return { x: L.x, y: L.y, k: 1 };
+    return { x: sx(c, L.X), y: sy(c, L.Y), k: L.mpp_in / c.mpp };
+  }
+
+  function drawTitle(g, c, L, t) {
     if (t < L.in) return;
     const st = LOOK()[L.style] || LOOK().title_on_map, a = fadeOut(t, L.out);
     if (a <= 0) return;
-    const txt = typed(L.text, t, L.in, TOKENS.motion.text_in.duration);
-    const grow = 1 + (LOOK().title.grow_per_s || 0) * (t - L.in);
-    g.save(); g.globalAlpha = a; g.translate(L.x, L.y); g.scale(grow, grow);
-    g.font = font(st); g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.fillStyle = st.color;
-    shadowText(g); g.fillText(txt, 0, 0); g.restore();
+    const txt = typed(L.text, t, L.in, L.type_s ?? TOKENS.motion.text_in.duration);
+    const p = anchorOf(c, L), grow = L.X === undefined ? 1 + (LOOK().title.grow_per_s || 0) * (t - L.in) : p.k;
+    g.save(); g.globalAlpha = a; g.translate(p.x, p.y); g.scale(grow, grow);
+    setFont(g, st); g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.fillStyle = st.color;
+    shadowText(g); haloText(g, txt, 0, 0, st.size, st.outline); g.restore();
   }
 
-  function drawStat(g, L, t) {
+  function drawStat(g, c, L, t) {
     const a = fadeOut(t, L.out); if (a <= 0) return;
-    const S = LOOK().stat, gap = TOKENS.plan.stat_line_gap * H;
-    // stack lines downwards from (x, y): each line's height from its style; centre the whole block on y
-    const hs = L.lines.map(ln => S[ln.style].size), total = hs.reduce((s, h) => s + h, 0) + gap * (hs.length - 1);
-    let y = L.y - total / 2;
+    const S = LOOK().stat, gapPx = TOKENS.plan.stat_line_gap * H;
+    // Each line's height in WORLD metres = its token size at the zoom it appears with (line.mpp_in); the block is
+    // centred on its anchor. Screen-anchored stats use plain pixels (mpp = 1 everywhere).
+    const world = L.X !== undefined, m0 = world ? L.mpp_in : 1;
+    const hw = L.lines.map(ln => S[ln.style].size * (world ? (ln.mpp_in || m0) : 1)), gw = gapPx * m0;
+    const total = hw.reduce((s, h) => s + h, 0) + gw * (hw.length - 1);
+    const p = anchorOf(c, L), toPx = world ? 1 / c.mpp : 1;
+    let y = p.y - total / 2 * toPx;
     g.save(); g.globalAlpha = a; g.textAlign = L.align || 'center'; g.textBaseline = 'top';
     L.lines.forEach((ln, i) => {
-      const st = S[ln.style];
+      const st = S[ln.style], px = hw[i] * toPx;
       if (t >= ln.in) {
-        g.font = font(st); g.fillStyle = st.color; shadowText(g);
-        g.fillText(typed(ln.text, t, ln.in, TOKENS.motion.number_in.duration), L.x, y);
+        setFont(g, st, px); g.fillStyle = st.color; shadowText(g);
+        const txt = st.case === 'upper' ? ln.text.toUpperCase() : ln.text;
+        haloText(g, typed(txt, t, ln.in, TOKENS.motion.number_in.duration), p.x, y, px, S.outline);
       }
-      y += hs[i] + gap;
+      y += px + gw * toPx;
     });
     g.restore();
   }
@@ -195,7 +224,7 @@ const MAPANI = (() => {
     g.save(); g.translate(x, y); g.scale(s, s);
     g.beginPath(); g.arc(0, 0, st.dot_radius, 0, Math.PI * 2); g.fillStyle = st.dot_fill; g.fill();
     g.lineWidth = st.dot_stroke_width; g.strokeStyle = st.dot_stroke; g.stroke();
-    g.font = font({ font: pill.font, size: pill.size }); g.textBaseline = 'middle';
+    setFont(g, { font: pill.font, size: pill.size }); g.textBaseline = 'middle';
     const w = g.measureText(L.label).width + pill.pad_x * 2, h = pill.size + pill.pad_y * 2;
     const bx = -w / 2, by = -st.dot_radius - 10 - h;
     g.fillStyle = pill.fill; g.beginPath(); g.roundRect(bx, by, w, h, pill.radius); g.fill();
@@ -224,8 +253,8 @@ const MAPANI = (() => {
     drawVignette(g);
     for (const L of shot.layers) if (L.type === 'route') drawRoute(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'pin') drawPin(g, c, L, t);
-    for (const L of shot.layers) if (L.type === 'title') drawTitle(g, L, t);
-    for (const L of shot.layers) if (L.type === 'stat') drawStat(g, L, t);
+    for (const L of shot.layers) if (L.type === 'title') drawTitle(g, c, L, t);
+    for (const L of shot.layers) if (L.type === 'stat') drawStat(g, c, L, t);
     drawCredit(g);
   }
 

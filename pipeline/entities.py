@@ -20,7 +20,7 @@ from pathlib import Path
 from pipeline.common import read_json, require_env, sha, write_json
 
 DEFAULT_MODEL = "gemini-3.8-flash"
-PROMPT_VERSION = 4
+PROMPT_VERSION = 5
 
 PLACE_KINDS = ["country", "state", "district", "city", "neighbourhood", "river", "lake", "sea", "ocean", "mountain",
                "mountain_range", "region", "desert", "island", "continent", "landmark", "road", "highway",
@@ -95,7 +95,10 @@ Rules:
   "11.7 KM", "45 Stations", "₹5.8 Lakh", "1.28 Billion". refers_to = the entity it describes.
 - Dates/years -> type date, display e.g. "1975".
 - Phrases: the 1-3 strongest claims or superlatives worth typing on screen ("India's longest highway", "World's first
-  organic state"), emphasis title/keyword/callout, display short.
+  organic state"), emphasis title/callout, display short.
+- Keywords: short facts about a subject that an editor would type next to its stats, 1-2 words, e.g. "saare elevated
+  hain" -> display "Elevated"; "24/7 operational" -> "24/7 Operational"; "underground". type phrase, emphasis keyword,
+  refers_to = the subject, w0/w1 on the fact's key word.
 - People: real people mentioned -> type person, visual none (we never generate real people). Things that cannot be
   shown on a map (trains, farms, food) -> type thing, visual broll, with an English broll_query.
 - sections: split the whole transcript (every word index exactly once, in order) into hook (first claim), explain,
