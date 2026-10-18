@@ -55,6 +55,57 @@ def clip_offset(clip, narration):
     return lag / 100.0, float(np.clip(peak, 0, 1))
 
 
+def face_center(clip, t0, t1, n=7):
+    """Median centre of the largest face in the clip between t0 and t1 (clip time), as fractions of the frame."""
+    import cv2
+    det = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    cap = cv2.VideoCapture(str(clip))
+    pts = []
+    for t in np.linspace(t0, max(t0, t1 - 0.05), n):
+        cap.set(cv2.CAP_PROP_POS_MSEC, max(0, t) * 1000)
+        ok, f = cap.read()
+        if not ok:
+            continue
+        g = cv2.cvtColor(cv2.resize(f, (360, round(360 * f.shape[0] / f.shape[1]))), cv2.COLOR_BGR2GRAY)
+        faces = det.detectMultiScale(g, 1.15, 5, minSize=(50, 50))
+        if len(faces):
+            x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
+            pts.append(((x + w / 2) / g.shape[1], (y + h / 2) / g.shape[0]))
+    cap.release()
+    if not pts:
+        return 0.5, 0.4
+    a = np.array(pts)
+    return float(np.median(a[:, 0])), float(np.median(a[:, 1]))
+
+
+def zoom_filter(shot, clip, clip_off, W, H, fps, F):
+    """zoompan expression for a face-cam shot: punch-in cuts (scale steps) with a slow push between them, each
+    segment centred on the face (face at F['face_y'] of the frame height). Times are relative to the shot start."""
+    dur = shot["end"] - shot["start"]
+    punches = shot.get("punches") or [{"t": 0.0, "scale": 1.0}]
+    segs = []
+    for i, p in enumerate(punches):
+        t0, t1 = p["t"], (punches[i + 1]["t"] if i + 1 < len(punches) else dur)
+        fx, fy = face_center(clip, shot["start"] + t0 - clip_off, shot["start"] + t1 - clip_off)
+        segs.append((t0, t1, p["scale"], fx, fy))
+    push = F["push_per_shot"]
+
+    def nest(f):  # if(lt(it,t1), seg0, if(lt(it,t2), seg1, ...))
+        expr = f(segs[-1])
+        for s in reversed(segs[:-1]):
+            expr = f"if(lt(it,{s[1]:.3f}),{f(s)},{expr})"
+        return expr
+    z = nest(lambda s: f"{s[2]:.4f}*(1+{push:.4f}*(it-{s[0]:.3f})/{max(0.5, s[1] - s[0]):.3f})")
+    fxs = nest(lambda s: f"{s[3]:.4f}")
+    fys = nest(lambda s: f"{s[4]:.4f}")
+    x = f"max(0,min(iw-iw/zoom,({fxs})*iw-iw/zoom/2))"
+    y = f"max(0,min(ih-ih/zoom,({fys})*ih-{F['face_y']}*ih/zoom))"
+    g = F["grade"]
+    return (f"zoompan=z='{z}':x='{x}':y='{y}':d=1:s={W}x{H}:fps={fps},"
+            f"eq=contrast={g['contrast']}:saturation={g['saturation']}:gamma={g['gamma']},"
+            f"vignette=angle={g['vignette']}")
+
+
 def loudnorm(src, dst, target):
     """Two-pass EBU R128 normalisation to the target loudness / true peak (linear gain when possible)."""
     I, TP = target["target_lufs"], target["true_peak_max"]
@@ -110,6 +161,10 @@ def assemble(ep, facecam=None, music=None, out=None, raw=None):
             print("[assemble] WARNING: face-cam audio barely matches the narration - check the clip/placement")
         inputs += ["-i", str(facecam)]
         parts, prev = [], "base"
+        rd = ep / "render" / "out"
+        # zoom on a slightly larger frame than the output (smoother push, less upscaling blur); 1.25x keeps it quick
+        ss = tokens["facecam"].get("supersample", 1.25)
+        ss_w, ss_h = int(round(W * ss / 2) * 2), int(round(H * ss / 2) * 2)
         for i, s in enumerate(cam_shots):
             cs, ce = s["start"] - off, s["end"] - off  # clip-time window for this shot
             # the clip may begin a moment after the shot (the planner cuts on the narration's sentence, the clip starts
@@ -117,17 +172,27 @@ def assemble(ep, facecam=None, music=None, out=None, raw=None):
             # over the gap, instead of sliding the clip earlier
             gap = max(0.0, -cs)
             lbl = f"c{i}"
+            zf = zoom_filter(s, facecam, off, W, H, fps, tokens["facecam"])
             vf += (f";[1:v]trim=start={max(0, cs):.3f}:end={ce:.3f},setpts=PTS-STARTPTS,"
-                   f"tpad=start_duration={gap:.3f}:start_mode=clone,setpts=PTS+{s['start'] - off0:.3f}/TB,"
-                   f"fps={fps},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1[{lbl}];"
-                   f"[{prev}][{lbl}]overlay=enable='between(t,{s['start'] - off0:.3f},{s['end'] - off0:.3f})':eof_action=pass[v{i}]")
+                   f"tpad=start_duration={gap:.3f}:start_mode=clone,fps={fps},"
+                   f"scale={ss_w}:{ss_h}:force_original_aspect_ratio=increase,crop={ss_w}:{ss_h},setsar=1,"
+                   f"{zf},setpts=PTS-STARTPTS+{s['start'] - off0:.3f}/TB[{lbl}]")
+            ov = rd / f"overlay_{s['id']}"
+            if ov.exists() and any(ov.glob("f*.png")):  # popups / buttons drawn by the renderer, transparent
+                k = inputs.count("-i")  # index of the input added next
+                inputs += ["-framerate", str(fps), "-start_number", "0", "-i", str(ov / "f%04d.png")]
+                vf += (f";[{k}:v]format=rgba,setpts=PTS-STARTPTS+{s['start'] - off0:.3f}/TB[o{i}];"
+                       f"[{lbl}][o{i}]overlay=eof_action=pass:format=auto[{lbl}x]")
+                lbl += "x"
+            vf += (f";[{prev}][{lbl}]overlay=enable='between(t,{s['start'] - off0:.3f},{s['end'] - off0:.3f})'"
+                   f":eof_action=pass[v{i}]")
             prev = f"v{i}"
         vf += f";[{prev}]null[vout]"
     else:
         vf += ";[base]null[vout]"
 
     # ---- optional music bed, ducked under the voice ----
-    a_idx = len(inputs) // 2
+    a_idx = inputs.count("-i")
     inputs += audio_in
     if music:
         mb = tokens["audio"]["music_bed"]
@@ -139,7 +204,7 @@ def assemble(ep, facecam=None, music=None, out=None, raw=None):
     fc = vf + (";" + audio_filter if audio_filter else "")
     cmd = ["ffmpeg", "-v", "error", "-stats", "-y", *inputs, "-filter_complex", fc, "-map", "[vout]",
            "-map", amap or f"{a_idx}:a", "-t", str(sc["duration"]),
-           "-c:v", "libx264", "-profile:v", "high", "-preset", "slow", "-crf", "18", "-maxrate", "20M", "-bufsize", "40M",
+           "-c:v", "libx264", "-profile:v", "high", "-preset", "medium", "-crf", "18", "-maxrate", "20M", "-bufsize", "40M",
            "-pix_fmt", "yuv420p", "-r", str(fps), "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
            "-movflags", "+faststart", str(out)]
     subprocess.run(cmd, check=True)

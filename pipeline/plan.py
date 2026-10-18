@@ -52,7 +52,8 @@ SCHEMA = {
                 "start": {"type": "number"}, "end": {"type": "number"},
                 "camera": {"type": "array", "items": {"type": "object", "required": ["t", "x", "y", "mpp"]}},
                 "layers": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {
-                    "type": {"enum": ["route", "tint", "pin", "title", "stat"]}}}}}}},
+                    "type": {"enum": ["route", "tint", "pin", "title", "stat", "button"]}}}},
+                "punches": {"type": "array", "items": {"type": "object", "required": ["t", "scale"]}}}}},
     },
 }
 
@@ -213,6 +214,47 @@ class Planner:
 
     def cam_at(self, keys, t, drift):
         return camera_at(keys, t, drift)
+
+    # ---------- face-cam ----------
+    def facecam_shot(self, sid, a, b):
+        """A face-cam shot that isn't flat: punch-in cuts on phrase starts (reference: x1.2-1.6 every 3-7 s) with a
+        slow push between them, numbers popping up above the head in the stat style, and Follow / Comment buttons on
+        the words. The zoom itself is applied to the clip in assemble.py (it needs the clip to find the face)."""
+        F, T = self.T["facecam"], self.T
+        words = [w for w in self.tr["words"] if a <= w["start"] < b]
+        # punch-in cut points: phrase starts (a small pause before the word), roughly every 3-5 s
+        punches, t, i = [{"t": 0.0, "scale": F["punch"]["scales"][0]}], a, 1
+        lo, hi = F["punch"]["every_s"]
+        prev_end = {id(w): (words[k - 1]["end"] if k else a) for k, w in enumerate(words)}
+        while True:
+            want = t + (lo if i % 2 else hi)
+            cands = [w for w in words if want - 1.0 <= w["start"] <= want + 1.5 and w["start"] < b - 1.5]
+            if not cands:
+                break
+            w = max(cands, key=lambda w: (w["start"] - prev_end[id(w)] >= F["punch"]["min_gap_before_word_s"],
+                                          -abs(w["start"] - want)))
+            punches.append({"t": round(w["start"] - a, 3), "scale": F["punch"]["scales"][i % len(F["punch"]["scales"])]})
+            t, i = w["start"], i + 1
+        layers = []
+        # numbers / keyword facts said on camera pop up above the head, in the same stat style as the map
+        nums = [e for e in self.ents["entities"] if a <= e["start"] < b and
+                (e["type"] == "number" or (e["type"] == "phrase" and e.get("emphasis") == "keyword"))]
+        for n in nums:
+            st = self.stat_style(n)
+            t_in = round(n["start"] + T["motion"]["number_in"]["start_after_word"], 3)
+            # lower third, never over the face, even in a deep punch-in close-up
+            y = F["stat_y"] * self.H
+            layers.append({"type": "stat", "x": self.W / 2, "y": round(y, 1), "align": "center",
+                           "out": round(min(b, t_in + 2.8), 3), "lines": [{"text": n.get("display") or n["quote"],
+                                                                           "style": st, "in": t_in}]})
+        # buttons on the words (first time each is said)
+        for key in ("comment_button", "follow_button"):
+            btn = F[key]
+            w = next((w for w in words if any(tw in w["w"].lower() for tw in btn["trigger_words"])), None)
+            if w:
+                layers.append({"type": "button", "style": key, "in": round(w["start"] + F["follow_button"]["in_after_word"], 3),
+                               "out": round(b, 3)})
+        return {"id": sid, "kind": "facecam", "start": a, "end": b, "src": None, "punches": punches, "layers": layers}
 
     # ---------- labels ----------
     def pins_lifetime_and_layout(self, layers, subjects, keys, drift, map_end):
@@ -486,7 +528,7 @@ class Planner:
                     {k: (round(v, 2) if isinstance(v, float) else v) for k, v in key.items()} for key in keys],
                   "drift_per_s": drift, "focus": focus, "layers": layers}]
         if map_end < b:
-            shots.append({"id": "s02", "kind": "facecam", "start": map_end, "end": b, "src": None})
+            shots.append(self.facecam_shot("s02", map_end, b))
         credits = sorted({c for c in [self.L["basemap"].get("credit")] if c})
         return {"version": 1, "duration": round(b - a, 3), "offset": a, "fps": self.fps, "width": self.W, "height": self.H,
                 "look": self.look, "audio": next((p.name for p in self.ep.glob("narration.*")), None),

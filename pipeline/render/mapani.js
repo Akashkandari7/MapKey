@@ -263,6 +263,60 @@ const MAPANI = (() => {
     drawCredit(g);
   }
 
+  // Follow / COMMENT buttons on the face-cam (r5): pill with a pop-in
+  function drawButton(g, L, t) {
+    if (t < L.in) return;
+    const a = fadeOut(t, L.out); if (a <= 0) return;
+    const B = TOKENS.facecam[L.style], P = TOKENS.facecam.follow_button.pop;
+    const u = Math.min(1, (t - L.in) / P.duration), s = P.from_scale + (1 - P.from_scale) * EASE[P.ease](u);
+    setFont(g, { font: B.font, size: B.size });
+    const icon = B.icon === 'plus' ? B.size * .8 : 0;
+    const w = g.measureText(B.text).width + 2 * B.pad_x + icon, h = B.size + 2 * B.pad_y;
+    g.save(); g.globalAlpha = a; g.translate(W / 2, B.y * H); g.scale(s, s);
+    g.shadowColor = 'rgba(0,0,0,.35)'; g.shadowBlur = 18; g.shadowOffsetY = 6;
+    if (B.gradient) { const gr = g.createLinearGradient(-w / 2, 0, w / 2, 0); gr.addColorStop(0, B.gradient[0]); gr.addColorStop(1, B.gradient[1]); g.fillStyle = gr; }
+    else g.fillStyle = B.fill;
+    g.beginPath(); g.roundRect(-w / 2, -h / 2, w, h, B.radius); g.fill();
+    g.shadowColor = 'transparent'; g.fillStyle = B.text_color; g.textAlign = 'center'; g.textBaseline = 'middle';
+    if (icon) {  // a plus sign before the word, like Instagram's follow button
+      const ix = -w / 2 + B.pad_x + icon * .35, sz = icon * .32; g.lineWidth = B.size * .12; g.strokeStyle = B.text_color; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(ix - sz, 0); g.lineTo(ix + sz, 0); g.moveTo(ix, -sz); g.lineTo(ix, sz); g.stroke();
+    }
+    g.fillText(B.text, icon / 2, 2);
+    g.restore();
+  }
+
+  // face-cam shot: in the normal pass a placeholder (the clip covers it in assemble.py); in the overlay pass
+  // (?overlay) only the popups and buttons, on a transparent frame, composited over the zoomed clip
+  function drawFacecam(shot, t) {
+    const overlay = location.search.includes('overlay');
+    if (!overlay) return drawPlaceholder(shot, t, 'FACE-CAM CLIP HERE');
+    G.clearRect(0, 0, W, H);
+    for (const L of shot.layers || []) {
+      if (L.type === 'stat') drawCamStat(G, L, t);
+      if (L.type === 'button') drawButton(G, L, t);
+    }
+  }
+
+  // numbers said on camera: the map's stat style, bigger, on a soft dark box (a white wall kills yellow text)
+  function drawCamStat(g, L, t) {
+    const a = fadeOut(t, L.out); if (a <= 0 || t < L.lines[0].in) return;
+    const S = LOOK().stat, Bx = TOKENS.facecam.stat_box;
+    const sizes = L.lines.map(ln => S[ln.style].size * Bx.size_scale);
+    const widths = L.lines.map((ln, i) => { setFont(g, S[ln.style], sizes[i]); return g.measureText(ln.text).width; });
+    const bw = Math.max(...widths) + 2 * Bx.pad_x, bh = sizes.reduce((s, v) => s + v * 1.1, 0) + 2 * Bx.pad_y;
+    const u = Math.min(1, (t - L.lines[0].in) / .25), s = .85 + .15 * EASE.backOut(u);
+    g.save(); g.globalAlpha = a; g.translate(L.x, L.y); g.scale(s, s);
+    g.fillStyle = rgba(Bx.fill, Bx.opacity * Math.min(1, u * 2)); g.beginPath(); g.roundRect(-bw / 2, -bh / 2, bw, bh, Bx.radius); g.fill();
+    let y = -bh / 2 + Bx.pad_y;
+    L.lines.forEach((ln, i) => {
+      const st = S[ln.style]; setFont(g, st, sizes[i]); g.fillStyle = st.color; g.textAlign = 'center'; g.textBaseline = 'top';
+      shadowText(g); haloText(g, typed(st.case === 'upper' ? ln.text.toUpperCase() : ln.text, t, ln.in, TOKENS.motion.number_in.duration), 0, y, sizes[i], S.outline);
+      y += sizes[i] * 1.1;
+    });
+    g.restore();
+  }
+
   function drawPlaceholder(shot, t, label) {
     G.fillStyle = '#16161a'; G.fillRect(0, 0, W, H);
     G.fillStyle = '#ffffff'; G.globalAlpha = .8; G.font = '700 54px "Inter"'; G.textAlign = 'center';
@@ -276,7 +330,8 @@ const MAPANI = (() => {
     shots([[s.start - off, (lt) => {
       const t = lt + off;
       if (s.kind === 'map') drawMapShot(s, t);
-      else drawPlaceholder(s, t, s.kind === 'facecam' ? 'FACE-CAM CLIP HERE' : 'B-ROLL HERE');
+      else if (s.kind === 'facecam') drawFacecam(s, t);
+      else drawPlaceholder(s, t, 'B-ROLL HERE');
     }]]);
   }
 

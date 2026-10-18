@@ -164,6 +164,15 @@ def render(ep, scenes_path=None, workers=3, sheet=None, out=None):
     if frames.exists():
         shutil.rmtree(frames)  # scenes may have changed: never mix frames from two plans
     node(rd, "--frames", f"--workers={workers}", f"--fps={fps}")
+    # face-cam popups/buttons: transparent PNG frames per shot, composited over the zoomed clip by assemble.py
+    for s in sc["shots"]:
+        ov = rd / "out" / f"overlay_{s['id']}"
+        if ov.exists():
+            shutil.rmtree(ov)
+        if s["kind"] == "facecam" and s.get("layers"):
+            off = sc.get("offset", 0)
+            node(rd, "--png", "--overlay", f"--range={s['start'] - off}:{s['end'] - off}", f"--fps={fps}",
+                 f"--workers={workers}", f"--out=out/overlay_{s['id']}")
     audio = None
     nar = next(ep.glob("narration.*"), None)
     if nar:
