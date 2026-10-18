@@ -75,6 +75,26 @@ EASES = {
 }
 
 
+def camera_at(keys, t, drift):
+    """Camera (x, y, mpp) at time t. Keep identical to camAt in pipeline/render/mapani.js.
+
+    keys[0] is where the shot starts; every later key is a move: from t0 to t the camera eases from wherever it was
+    at t0 to the key's framing. Between moves (and after the last) it drifts: mpp shrinks by exp(-drift * time since
+    the move ended), a slow push-in that never accumulates into a different framing (r1 look: never fully still)."""
+    k = keys[-1]
+    if len(keys) == 1:
+        return k["x"], k["y"], k["mpp"] * math.exp(-drift * max(0.0, t - k["t"]))
+    t0 = k.get("t0", keys[-2]["t"])
+    if t <= t0:
+        return camera_at(keys[:-1], t, drift)
+    # a move starts from wherever the camera really is at t0 (even mid-way through the previous move): no jolt
+    sx, sy, sm = camera_at(keys[:-1], t0, drift)
+    if t < k["t"]:
+        e = EASES[k.get("ease", "easeOutSine")]((t - t0) / max(1e-6, k["t"] - t0))
+        return sx + (k["x"] - sx) * e, sy + (k["y"] - sy) * e, math.exp(math.log(sm) + (math.log(k["mpp"]) - math.log(sm)) * e)
+    return k["x"], k["y"], k["mpp"] * math.exp(-drift * (t - k["t"]))
+
+
 class Planner:
     def __init__(self, ep, tokens, rng=None):
         self.ep = Path(ep)
@@ -192,21 +212,57 @@ class Planner:
         return layer
 
     def cam_at(self, keys, t, drift):
-        """Same math as the renderer (mapani.js camAt): piecewise eased keys, zoom drift on top."""
-        if t <= keys[0]["t"]:
-            k = keys[0]
-            c = (k["x"], k["y"], k["mpp"])
-        else:
-            c = (keys[-1]["x"], keys[-1]["y"], keys[-1]["mpp"])
-            for a, b in zip(keys, keys[1:]):
-                if t < b["t"]:
-                    t0 = b.get("t0", a["t"])
-                    u = 0 if t <= t0 else min(1, (t - t0) / max(1e-6, b["t"] - t0))
-                    e = EASES[b.get("ease", "easeOutSine")](u)
-                    lm = math.log(a["mpp"]) + (math.log(b["mpp"]) - math.log(a["mpp"])) * e
-                    c = (a["x"] + (b["x"] - a["x"]) * e, a["y"] + (b["y"] - a["y"]) * e, math.exp(lm))
-                    break
-        return c[0], c[1], c[2] * math.exp(-drift * t)
+        return camera_at(keys, t, drift)
+
+    # ---------- labels ----------
+    def pins_lifetime_and_layout(self, layers, subjects, keys, drift, map_end):
+        """r1 rules: (1) when the story moves to a new line, earlier labels go, except the new line's own stops
+        (Millennium City stays for the extension, Guru Dronacharya goes); (2) labels never overlap each other or a
+        stat block: each pill takes the first free side of its dot (above, below, right, left)."""
+        fade = self.T["motion"]["text_out"]["duration"]
+        # only a new LINE (metro/rail) clears labels; a road appearing on top of the scene keeps them (r1 at 32-33 s)
+        lines = [e for e in subjects if e["type"] == "route" and e.get("mode") not in ("road",)
+                 and e.get("kind") not in ("road", "highway")]
+        pins = [l for l in layers if l["type"] == "pin"]
+
+        def is_stop(pin, route):  # by place, not id: the same station can be mentioned twice under two ids
+            pt = Point(self.out_geom[pin["geom"]]["coords"])
+            return any(s in self.geom3857 and self.geom3857[s].distance(pt) < 400 for s in (route.get("stops") or []))
+        for p in pins:
+            later = [r for r in lines if r["start"] > p["in"] + 0.3 and not is_stop(p, r)]
+            if later:
+                p["out"] = round(later[0]["start"], 3)
+        pill, st = self.L["label_pill"], self.L["station"]
+        h = pill["size"] + 2 * pill["pad_y"]
+        placed = []  # (t_in, t_out, box) of every pill and stat block already laid out, in screen px at that time
+
+        def overlap(a, b):
+            return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+        for l in layers:
+            if l["type"] == "stat":
+                cam = self.cam_at(keys, l["lines"][0]["in"] + 2.5, drift)
+                x, y = self.to_screen(cam, l["X"], l["Y"]) if "X" in l else (l["x"], l["y"])
+                bw = max(len(n["text"]) * 0.58 * self.L["stat"][n["style"]]["size"] for n in l["lines"])
+                bh = sum(self.L["stat"][n["style"]]["size"] for n in l["lines"]) * 1.2
+                placed.append((l["lines"][0]["in"], l.get("out", map_end) + fade, (x - bw / 2, y - bh / 2, x + bw / 2, y + bh / 2)))
+        for p in sorted(pins, key=lambda p: p["in"]):
+            cam = self.cam_at(keys, p["in"] + 1.0, drift)
+            X, Y = self.out_geom[p["geom"]]["coords"]
+            x, y = self.to_screen(cam, X, Y)
+            w = len(p["label"]) * 0.56 * pill["size"] + 2 * pill["pad_x"]
+            gap = st["dot_radius"] + 10
+            sides = {"above": (x - w / 2, y - gap - h, x + w / 2, y - gap),
+                     "below": (x - w / 2, y + gap, x + w / 2, y + gap + h),
+                     "right": (x + gap, y - h / 2, x + gap + w, y + h / 2),
+                     "left": (x - gap - w, y - h / 2, x - gap, y + h / 2)}
+            t0, t1 = p["in"], p.get("out", map_end) + fade
+            live = [b for (a, z, b) in placed if a < t1 and t0 < z]
+            inside = lambda b: b[0] >= self.safe["left"] and b[2] <= self.W - self.safe["right"] and b[1] >= self.safe["top"]
+            side = next((s for s, b in sides.items() if inside(b) and not any(overlap(b, o) for o in live)), None) \
+                or next((s for s, b in sides.items() if not any(overlap(b, o) for o in live)), "above")
+            p["side"] = side
+            placed.append((t0, t1, sides[side]))
 
     # ---------- text helpers ----------
     def short_name(self, e):
@@ -247,7 +303,7 @@ class Planner:
                 subjects.append(e)
         subjects.sort(key=lambda e: e["start"])
 
-        layers, keys = [], []
+        layers, keys, targets = [], [], {}
         # first view: the main place, a little wider than its fit, camera already moving from frame 0
         first = main_g if main_g is not None else self.geom3857[subjects[0]["id"]]
         cx, cy, mpp = self.fit(first.bounds, P["fit"]["main_place"])
@@ -269,9 +325,13 @@ class Planner:
         title_done = False
         for e in subjects:
             g = self.geom3857[e["id"]]
-            if e["type"] == "route":
+            # a "place" whose shape is a line (a road named as a place: "Dwarka Expressway") is drawn like a route
+            is_line = g.geom_type in ("LineString", "MultiLineString")
+            if e["type"] == "route" or (is_line and e.get("visual") in ("route", "highlight", "zoom")):
+                # stops are the places the line passes through; a road or other line named as a stop ("...till
+                # Dwarka Expressway") has no single point on the route, so it is not a curve point
                 stops = [list(self.geom3857[s].representative_point().coords[0]) for s in (e.get("stops") or [])
-                         if s in self.geom3857]
+                         if s in self.geom3857 and self.geom3857[s].geom_type not in ("LineString", "MultiLineString")]
                 res = next(it["resolved"] for it in self.geo["items"] if it["id"] == e["id"])
                 line = self.smooth_through(stops) if res["method"] == "approx" and len(stops) >= 3 else self.route_line(g, stops)
                 # far-reaching lines (Yellow Line runs 50 km into Delhi) are shown where the story is
@@ -279,40 +339,71 @@ class Planner:
                 if view_line.is_empty:
                     view_line = line
                 name_l = (e.get("name_en") or "").lower()
-                color = next((c for k, c in P["named_route_colors"].items() if re.search(rf"\b{k}\b", name_l)), None)
+                is_road = e.get("mode") == "road" or e.get("kind") in ("road", "highway")
+                road = self.L["route"].get("road_style") if is_road else None
+                color = road["color"] if road else next(
+                    (c for k, c in P["named_route_colors"].items() if re.search(rf"\b{k}\b", name_l)), None)
                 if color is None:
                     color = next(c for c in colors if c not in used.values()) if len(used) < len(colors) else colors[0]
                 used[e["id"]] = color
                 gid = self.add_geom("g_" + e["id"], line, "line", e.get("name_en"), mpp / 4)
                 hook_first = not any(l["type"] == "route" for l in layers) and e["start"] - a < 2.0
                 layers.append({"type": "route", "geom": gid, "color": color, "in": a + 0.1 if hook_first else e["start"],
-                               "draw_s": T["motion"]["route_draw"]["duration"], "ease": T["motion"]["route_draw"]["ease"]})
-                target = view_line.bounds
+                               "draw_s": T["motion"]["route_draw"]["duration"], "ease": T["motion"]["route_draw"]["ease"],
+                               **({"dash": road["dash"], "width": road["width"]} if road else {})})
+                # frame the part of the line the story is about: its named stops (r1: the Yellow Line between Guru
+                # Dronacharya and Millennium City, not its 50 km into Delhi); no stops -> the clipped line
+                if len(stops) >= 2:
+                    sx_, sy_ = [p[0] for p in stops], [p[1] for p in stops]
+                    seg = view_line.intersection(box(min(sx_), min(sy_), max(sx_), max(sy_)).buffer(800))
+                    sb = seg.bounds if not seg.is_empty else (min(sx_), min(sy_), max(sx_), max(sy_))
+                    target = (min(sb[0], min(sx_)), min(sb[1], min(sy_)), max(sb[2], max(sx_)), max(sb[3], max(sy_)))
+                    # room around the stops for their labels (and the drift that follows the move)
+                    pw, ph = (target[2] - target[0]) * P["stops_margin"], (target[3] - target[1]) * P["stops_margin"]
+                    target = (target[0] - pw, target[1] - ph, target[2] + pw, target[3] + ph)
+                else:
+                    target = view_line.bounds
                 fill = P["fit"]["route"]
             else:
                 kind = e.get("kind")
                 if e["id"] == main:
                     continue
                 if g.geom_type == "Point" or e.get("visual") in ("pin", "label"):
+                    pt = g.representative_point() if g.geom_type != "Point" else g
+                    same = [l for l in layers if l["type"] == "pin"
+                            and Point(self.out_geom[l["geom"]]["coords"]).distance(pt) < 400]
+                    if same:  # mentioned again (r1: "Millennium City" twice): its pin is already on the map
+                        short = e.get("display") or ""
+                        if short and len(short) < len(same[0]["label"]):
+                            same[0]["label"] = short  # keep the shorter, as-spoken label
+                        continue
                     gid = self.add_geom("g_" + e["id"], g.representative_point() if g.geom_type != "Point" else g, "point",
                                         e.get("name_en"), 0)
-                    label = (e.get("display") or e.get("name_en") or "").replace(" Metro Station", "").replace(" Gurugram", "")
-                    layers.append({"type": "pin", "geom": gid, "label": label,
-                                   "in": e["start"] + T["motion"]["label_in"]["start_after_word"]})
+                    # the label says the place the way the narrator said it ("Millennium City", not the station's
+                    # full OSM/LLM name); strip kind suffixes if only a long name is available
+                    label = e.get("display") or re.sub(r"\s+(Metro Station|Railway Station|Station)$", "",
+                                                       e.get("name_en") or "")
+                    layers.append({"type": "pin", "geom": gid, "label": label, "ent": e["id"],
+                                   "in": round(e["start"] + T["motion"]["label_in"]["start_after_word"], 3)})
                     continue  # pins don't move the camera; it keeps drifting over the area being talked about
                 gid = self.add_geom("g_" + e["id"], g, "polygon", e.get("name_en"), mpp / 3)
                 layers.append({"type": "tint", "geom": gid, "in": e["start"]})
                 target, fill = g.bounds, P["fit"]["place"]
             t_move = max(a, e["start"] - lead)
             cx, cy, mpp_t = self.fit(target, fill)
-            # don't zoom out to a far wider view just because a route is long: keep zooming in or holding scale
-            mpp_t = min(mpp_t, keys[-1]["mpp"]) if e["type"] == "route" else mpp_t
+            # long lines are already clipped to the story area; still never pull back more than 3x in one move
+            mpp_t = min(mpp_t, keys[-1]["mpp"] * 3)
             # a subject that gets stats sits right of centre, leaving the left for its numbers (r1: the route at ~0.62)
             if any(n.get("refers_to") == e["id"] for n in self.ents["entities"] if n["type"] == "number"):
                 rcx = (target[0] + target[2]) / 2
-                cx = rcx - (P["subject_with_stats_x"] - 0.5) * self.W * mpp_t
+                # ...but only as far as the subject still fits inside the safe area (a wide loop can't move over)
+                sw_px = self.W - self.safe["left"] - self.safe["right"]
+                room = max(0.0, (sw_px - (target[2] - target[0]) / mpp_t) / 2)
+                shift = min((P["subject_with_stats_x"] - 0.5) * self.W, room)
+                cx = rcx - shift * mpp_t
             dur = float(np.clip(camT["move_s"][0] + 0.4 * (camT["move_s"][1] - camT["move_s"][0]), *camT["move_s"]))
             keys.append({"t0": t_move, "t": t_move + dur, "x": cx, "y": cy, "mpp": mpp_t, "ease": camT["ease"]})
+            targets[e["id"]] = target
             # hook title: the first subject named in the hook gets a title on the map, above it
             if not title_done and e["start"] <= hook_end:
                 # the reel's very first subject is the hook: its title is on screen almost at once (r1: by 0.3 s,
@@ -357,20 +448,18 @@ class Planner:
             # grows with the zoom into exactly this spot), and anchor it to the map there
             t_settle = min(t_out - 0.1, t_in + P["stat_layout_after_s"])
             cam = self.cam_at(keys, t_settle, drift)
-            ref_g = self.geom3857.get(grp["ref"]) or main_g
-            if grp["ref"] in self.geom3857 and self.by_id.get(grp["ref"], {}).get("type") == "route" and clip_box is not None:
-                ref_g = ref_g.intersection(clip_box) if not ref_g.intersection(clip_box).is_empty else ref_g
-            bx = ref_g.bounds
+            if grp["ref"] in targets:  # the part of the subject the camera frames (e.g. the stops' stretch)
+                bx = targets[grp["ref"]]
+            else:
+                ref_g = self.geom3857.get(grp["ref"]) or main_g
+                bx = ref_g.bounds
             x0, y0 = self.to_screen(cam, bx[0], bx[3])
             x1, y1 = self.to_screen(cam, bx[2], bx[1])
             left_space, right_space = x0 - self.safe["left"], (self.W - self.safe["right"]) - x1
             m = P["stat_side_margin"] * self.W
             S = self.L["stat"]
-            # block width estimate (Inter bold ~0.58 em per character): r1 keeps the block close beside the route
-            # each line's width in the settled view: token size at its own appearance, grown by the zoom since then
-            bw = max(len(n.get("display") or n["quote"]) * 0.58 * S[self.stat_style(n)]["size"]
-                     * (self.cam_at(keys, n["start"], drift)[2] / cam[2] if S.get("anchor") == "world" else 1)
-                     for n in grp["lines"])
+            # block width estimate (Inter bold ~0.58 em per character, tokens sizes = px in the settled view)
+            bw = max(len(n.get("display") or n["quote"]) * 0.58 * S[self.stat_style(n)]["size"] for n in grp["lines"])
             if left_space >= right_space:
                 x = x0 - m - bw / 2
             else:
@@ -381,10 +470,11 @@ class Planner:
                                        "out": round(t_out, 3),
                                        "lines": [{"text": n.get("display") or n["quote"], "style": self.stat_style(n),
                                                   "in": round(n["start"] + T["motion"]["number_in"]["start_after_word"], 3),
-                                                  # each line is sized at its own appearance (a later line appears
-                                                  # after more zoom, at its token size, then grows like the rest)
-                                                  "mpp_in": round(self.cam_at(keys, n["start"], drift)[2], 4)}
+                                                  # world height: token size in the settled view; it reads smaller
+                                                  # while the camera is still zooming in, then grows into place (r1)
+                                                  "h_world": round(S[self.stat_style(n)]["size"] * cam[2], 2)}
                                                  for n in grp["lines"]]}, cam, self.L["stat"]))
+        self.pins_lifetime_and_layout(layers, subjects, keys, drift, map_end)
         # titles end where the first stat begins (r1: "Rapid Metro" gives way to "11 Stations")
         first_stat = min([l["lines"][0]["in"] for l in layers if l["type"] == "stat"] + [map_end])
         for l in layers:

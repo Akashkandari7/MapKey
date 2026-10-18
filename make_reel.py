@@ -47,14 +47,56 @@ def stage_geocode(ep, a):
     return f"{len(res['items'])} resolved, {len(res['missing'])} missing, {len(res['needs_review'])} to review"
 
 
-def not_built(name):
-    def run(ep, a):
-        raise SystemExit(f"stage '{name}' is not built yet (build step 4-6 in REEL_PIPELINE.md)")
-    return run
+def stage_plan(ep, a):
+    from pipeline.plan import Planner, validate
+    sc = Planner(ep, read_json(ROOT / "style/tokens.json")).plan()
+    validate(sc)
+    write_json(ep / "scenes.json", sc)
+    return f"{len(sc['shots'])} shots, {sum(len(s.get('layers', [])) for s in sc['shots'])} layers"
 
 
-RUN = {"transcribe": stage_transcribe, "entities": stage_entities, "geocode": stage_geocode,
-       **{s: not_built(s) for s in STAGES[3:]}}
+def stage_render(ep, a):
+    from pipeline.render_stage import render
+    return f"{render(ep, workers=a.workers)}"
+
+
+def stage_captions(ep, a):
+    tok = read_json(ROOT / "style/tokens.json")["captions"]
+    # the reference reels have no running subtitles; keyword/number/place text is drawn by the render stage
+    return "word-by-word captions off (style: keyword popups only)" if not tok["word_by_word"] else \
+        "word-by-word captions are on in tokens.json, but not built yet"
+
+
+def find_facecam(ep, a):
+    if a.facecam:
+        return Path(a.facecam)
+    for d in (ROOT / "inputs" / "audio", ROOT / "inputs" / "facecam"):
+        hit = next((p for p in sorted(d.glob(f"{ep.name}_facecam.*")) if p.suffix.lower() in (".mp4", ".mov", ".mkv")), None)
+        if hit:
+            return hit
+    return None
+
+
+def stage_mix(ep, a):
+    from pipeline.assemble import assemble
+    out, rep = assemble(ep, find_facecam(ep, a), a.music, a.out)
+    cam = rep["facecam"]
+    return (f"{out}  {rep['lufs']} LUFS / peak {rep['true_peak_dbfs']} dBFS; face-cam "
+            + (f"placed (offset {cam['offset_s']} s, match {cam['match']})" if cam else "placeholder (no clip given)"))
+
+
+def stage_export(ep, a):
+    from pipeline.style_capture.contact_sheet import sheet
+    out = Path(a.out or ROOT / "output" / f"{ep.name}.mp4")
+    sc = read_json(ep / "scenes.json")
+    segs = [{"start": s["start"], "end": s["end"], "kind": s["kind"]} for s in sc["shots"]]
+    words = read_json(ep / "transcript.json")["words"]
+    sheet(out, segs, words, out.with_suffix(".sheet.jpg"), title=f"{ep.name}  (bar: blue=map, red=face-cam)")
+    return f"{out}, {out.with_suffix('.scenes.json').name}, {out.with_suffix('.sheet.jpg').name}"
+
+
+RUN = {"transcribe": stage_transcribe, "entities": stage_entities, "geocode": stage_geocode, "plan": stage_plan,
+       "render": stage_render, "captions": stage_captions, "mix": stage_mix, "export": stage_export}
 
 
 def main():
@@ -68,6 +110,9 @@ def main():
     ap.add_argument("--lang", help="force transcription language, e.g. hi")
     ap.add_argument("--model", default="gemini-3.8-flash", help="Gemini model for entities")
     ap.add_argument("--offline", action="store_true", help="geocode without OpenStreetMap lookups")
+    ap.add_argument("--facecam", help="face-cam clip (default: inputs/audio/<episode>_facecam.mp4 if present)")
+    ap.add_argument("--music", help="optional music bed (only files you have the rights to)")
+    ap.add_argument("--workers", type=int, default=3, help="parallel render workers (3 keeps a laptop cool)")
     a = ap.parse_args()
     if not a.audio and not a.episode:
         ap.error("give --audio (new episode) or --episode (existing work folder)")

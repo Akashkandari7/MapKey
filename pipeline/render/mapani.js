@@ -22,27 +22,20 @@ const MAPANI = (() => {
   };
 
   // ---------- camera ----------
-  function camAt(shot, t) {
-    const keys = shot.camera;
-    let c;
-    if (t <= keys[0].t) c = { x: keys[0].x, y: keys[0].y, mpp: keys[0].mpp };
-    else {
-      const last = keys[keys.length - 1];
-      c = { x: last.x, y: last.y, mpp: last.mpp };
-      for (let i = 1; i < keys.length; i++) {
-        const a = keys[i - 1], b = keys[i];
-        if (t < b.t) {
-          const t0 = b.t0 !== undefined ? b.t0 : a.t;
-          const u = t <= t0 ? 0 : Math.min(1, (t - t0) / Math.max(1e-6, b.t - t0));
-          const e = (EASE[b.ease] || EASE.easeOutSine)(u);
-          const lm = Math.log(a.mpp) + (Math.log(b.mpp) - Math.log(a.mpp)) * e;
-          c = { x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e, mpp: Math.exp(lm) };
-          break;
-        }
-      }
+  // Keep identical to camera_at in pipeline/plan.py: each move eases from wherever the camera is (drift included)
+  // to its framing; between moves the camera drifts in from where it arrived (look A: never fully still).
+  function camAt(shot, t) { return camKeys(shot.camera, shot.camera.length, t, shot.drift_per_s || 0); }
+  function camKeys(keys, n, t, d) {
+    const k = keys[n - 1];
+    if (n === 1) return { x: k.x, y: k.y, mpp: k.mpp * Math.exp(-d * Math.max(0, t - k.t)) };
+    const t0 = k.t0 !== undefined ? k.t0 : keys[n - 2].t;
+    if (t <= t0) return camKeys(keys, n - 1, t, d);
+    const s = camKeys(keys, n - 1, t0, d);  // a move starts from wherever the camera really is: no jolt
+    if (t < k.t) {
+      const e = (EASE[k.ease] || EASE.easeOutSine)((t - t0) / Math.max(1e-6, k.t - t0));
+      return { x: s.x + (k.x - s.x) * e, y: s.y + (k.y - s.y) * e, mpp: Math.exp(Math.log(s.mpp) + (Math.log(k.mpp) - Math.log(s.mpp)) * e) };
     }
-    c.mpp *= Math.exp(-(shot.drift_per_s || 0) * t);  // look A: the camera never stops pushing in
-    return c;
+    return { x: k.x, y: k.y, mpp: k.mpp * Math.exp(-d * (t - k.t)) };
   }
   const sx = (c, X) => (X - c.x) / c.mpp + W / 2;
   const sy = (c, Y) => (c.y - Y) / c.mpp + H / 2;
@@ -131,7 +124,8 @@ const MAPANI = (() => {
       break;
     }
     const col = R.colors[L.color] || L.color;
-    g.save(); g.lineCap = R.cap; g.lineJoin = R.join; g.lineWidth = R.width;
+    g.save(); g.lineCap = L.dash ? 'butt' : R.cap; g.lineJoin = R.join; g.lineWidth = L.width || R.width;
+    if (L.dash) g.setLineDash(L.dash);  // roads: white dashed (r1 Dwarka Expressway), metro lines solid
     g.shadowColor = rgba('#000000', R.shadow.opacity); g.shadowBlur = R.shadow.blur; g.shadowOffsetY = R.shadow.offset_y;
     g.strokeStyle = col; g.stroke(p);
     g.shadowColor = rgba(col, R.glow.opacity); g.shadowBlur = R.glow.blur; g.shadowOffsetY = 0;
@@ -199,7 +193,8 @@ const MAPANI = (() => {
     // Each line's height in WORLD metres = its token size at the zoom it appears with (line.mpp_in); the block is
     // centred on its anchor. Screen-anchored stats use plain pixels (mpp = 1 everywhere).
     const world = L.X !== undefined, m0 = world ? L.mpp_in : 1;
-    const hw = L.lines.map(ln => S[ln.style].size * (world ? (ln.mpp_in || m0) : 1)), gw = gapPx * m0;
+    // h_world (planner): the line's height on the map, set so it reads at its token size once the camera settles
+    const hw = L.lines.map(ln => world ? (ln.h_world ?? S[ln.style].size * (ln.mpp_in || m0)) : S[ln.style].size), gw = gapPx * m0;
     const total = hw.reduce((s, h) => s + h, 0) + gw * (hw.length - 1);
     const p = anchorOf(c, L), toPx = world ? 1 / c.mpp : 1;
     let y = p.y - total / 2 * toPx;
@@ -218,18 +213,28 @@ const MAPANI = (() => {
 
   function drawPin(g, c, L, t) {
     if (t < L.in) return;
+    const a = fadeOut(t, L.out); if (a <= 0) return;
     const st = LOOK().station, pill = LOOK().label_pill, m = TOKENS.motion.label_in;
     const u = Math.min(1, (t - L.in) / m.duration), s = m.from_scale + (1 - m.from_scale) * EASE[m.ease](u);
     const [X, Y] = SCENES.geometry[L.geom].coords, x = sx(c, X), y = sy(c, Y);
-    g.save(); g.translate(x, y); g.scale(s, s);
+    g.save(); g.globalAlpha = a; g.translate(x, y); g.scale(s, s);
     g.beginPath(); g.arc(0, 0, st.dot_radius, 0, Math.PI * 2); g.fillStyle = st.dot_fill; g.fill();
     g.lineWidth = st.dot_stroke_width; g.strokeStyle = st.dot_stroke; g.stroke();
     setFont(g, { font: pill.font, size: pill.size }); g.textBaseline = 'middle';
-    const w = g.measureText(L.label).width + pill.pad_x * 2, h = pill.size + pill.pad_y * 2;
-    const bx = -w / 2, by = -st.dot_radius - 10 - h;
+    const w = g.measureText(L.label).width + pill.pad_x * 2, h = pill.size + pill.pad_y * 2, gap = st.dot_radius + 10;
+    // the planner picks the free side so labels never overlap (above is the default, as in r1)
+    const side = L.side || 'above';
+    const [bx, by] = { above: [-w / 2, -gap - h], below: [-w / 2, gap], right: [gap, -h / 2], left: [-gap - w, -h / 2] }[side];
     g.fillStyle = pill.fill; g.beginPath(); g.roundRect(bx, by, w, h, pill.radius); g.fill();
-    if (pill.pointer) { g.beginPath(); g.moveTo(-6, by + h); g.lineTo(6, by + h); g.lineTo(0, by + h + 7); g.fill(); }
-    g.fillStyle = pill.text; g.textAlign = 'center'; g.fillText(L.label, 0, by + h / 2 + 1);
+    if (pill.pointer) {
+      g.beginPath();
+      if (side === 'above') { g.moveTo(-6, by + h); g.lineTo(6, by + h); g.lineTo(0, by + h + 7); }
+      else if (side === 'below') { g.moveTo(-6, by); g.lineTo(6, by); g.lineTo(0, by - 7); }
+      else if (side === 'right') { g.moveTo(bx, -6); g.lineTo(bx, 6); g.lineTo(bx - 7, 0); }
+      else { g.moveTo(bx + w, -6); g.lineTo(bx + w, 6); g.lineTo(bx + w + 7, 0); }
+      g.fill();
+    }
+    g.fillStyle = pill.text; g.textAlign = 'center'; g.fillText(L.label, bx + w / 2, by + h / 2 + 1);
     g.restore();
   }
 

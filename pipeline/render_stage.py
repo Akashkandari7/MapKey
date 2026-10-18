@@ -26,25 +26,12 @@ MAX_PX = 40e6
 
 def views(shot, scenes, step=0.25):
     """(xmin, ymin, xmax, ymax, mpp) of the camera view every `step` seconds, same camera maths as mapani.js."""
-    from pipeline.plan import EASES
+    from pipeline.plan import camera_at
     W, H = scenes["width"], scenes["height"]
-    keys = shot["camera"]
     out = []
     t = shot["start"]
     while t <= shot["end"] + 1e-6:
-        if t <= keys[0]["t"]:
-            x, y, m = keys[0]["x"], keys[0]["y"], keys[0]["mpp"]
-        else:
-            x, y, m = keys[-1]["x"], keys[-1]["y"], keys[-1]["mpp"]
-            for a, b in zip(keys, keys[1:]):
-                if t < b["t"]:
-                    t0 = b.get("t0", a["t"])
-                    u = 0 if t <= t0 else min(1, (t - t0) / max(1e-6, b["t"] - t0))
-                    e = EASES[b.get("ease", "easeOutSine")](u)
-                    x, y = a["x"] + (b["x"] - a["x"]) * e, a["y"] + (b["y"] - a["y"]) * e
-                    m = math.exp(math.log(a["mpp"]) + (math.log(b["mpp"]) - math.log(a["mpp"])) * e)
-                    break
-        m *= math.exp(-shot.get("drift_per_s", 0) * t)
+        x, y, m = camera_at(shot["camera"], t, shot.get("drift_per_s", 0))
         out.append((x - W / 2 * m, y - H / 2 * m, x + W / 2 * m, y + H / 2 * m, m))
         t += step
     return out

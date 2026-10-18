@@ -20,7 +20,7 @@ from pathlib import Path
 from pipeline.common import read_json, require_env, sha, write_json
 
 DEFAULT_MODEL = "gemini-3.8-flash"
-PROMPT_VERSION = 5
+PROMPT_VERSION = 6
 
 PLACE_KINDS = ["country", "state", "district", "city", "neighbourhood", "river", "lake", "sea", "ocean", "mountain",
                "mountain_range", "region", "desert", "island", "continent", "landmark", "road", "highway",
@@ -85,6 +85,9 @@ Rules:
   name_en is the standard English name people would search a map for; for Indian names written in Devanagari give the
   usual English spelling (गुड़गाउ -> Gurugram, द्वार्का -> Dwarka). Always fill kind, country, parent when known, and an
   approximate lat/lon. Use India's official names (Survey of India): Jammu & Kashmir, Ladakh, etc.
+  For places and routes, display = the on-map label, the way the narrator said it, in Latin script and short
+  ("मिलेनियम सिटी" -> "Millennium City", not "Millennium City Centre Gurugram Metro Station"; "ओल्ड गुड़गांव" ->
+  "Old Gurgaon").
 - Routes: lines, highways, rivers-as-paths, "from A to B" journeys, borders between two places. stops = the ids of the
   place entities the route passes through, in travel order, INCLUDING places named later in the narration as being on
   this route (e.g. "the new metro will go to Old Gurgaon, Palam Vihar, Udyog Vihar, Cyber City" -> those ids are the
@@ -179,6 +182,11 @@ def extract(transcript, model=DEFAULT_MODEL, cache_dir=None):
         if not align(e, words):
             dropped.append(e)
             continue
+        if e["type"] == "number":
+            # a stat lands on the number itself ("टोटल 11 मेट्रो स्टेशन्स" -> on "11"), not on a lead-in word
+            digit = next((i for i in range(e["w0"], e["w1"] + 1) if re.search(r"\d", words[i]["w"])), None)
+            if digit is not None:
+                e["w0"] = digit
         e["start"], e["end"] = words[e["w0"]]["start"], words[e["w1"]]["end"]
         kept.append(e)
     for s in data.get("sections", []):
