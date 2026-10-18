@@ -26,3 +26,21 @@ data/geo/raw/
 data/geo/cache/
 data/geo/layers.gpkg
 data/geo/names.json
+
+# any media, anywhere (narration, clips, music): never in this public repo
+Audio/
+audio/
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.webp

@@ -263,7 +263,7 @@ class Planner:
             # lower third, never over the face, even in a deep punch-in close-up
             y = F["stat_y"] * self.H
             layers.append({"type": "stat", "x": self.W / 2, "y": round(y, 1), "align": "center",
-                           "out": round(min(b, t_in + 2.8), 3), "lines": [{"text": n.get("display") or n["quote"],
+                           "out": round(min(b, t_in + 2.8), 3), "lines": [{"ent": n["id"], "text": n.get("display") or n["quote"],
                                                                            "style": st, "in": t_in}]})
         # buttons on the words (first time each is said)
         for key in ("comment_button", "follow_button"):
@@ -410,7 +410,7 @@ class Planner:
                 used[e["id"]] = color
                 gid = self.add_geom("g_" + e["id"], line, "line", e.get("name_en"), mpp / 4)
                 hook_first = not any(l["type"] == "route" for l in layers) and e["start"] - a < 2.0
-                layers.append({"type": "route", "geom": gid, "color": color, "in": a + 0.1 if hook_first else e["start"],
+                layers.append({"type": "route", "ent": e["id"], "geom": gid, "color": color, "in": a + 0.1 if hook_first else e["start"],
                                "draw_s": T["motion"]["route_draw"]["duration"], "ease": T["motion"]["route_draw"]["ease"],
                                **({"dash": road["dash"], "width": road["width"]} if road else {})})
                 # frame the part of the line the story is about: its named stops (r1: the Yellow Line between Guru
@@ -454,7 +454,7 @@ class Planner:
                                    "in": round(e["start"] + T["motion"]["label_in"]["start_after_word"], 3)})
                     continue  # pins don't move the camera; it keeps drifting over the area being talked about
                 gid = self.add_geom("g_" + e["id"], g, "polygon", e.get("name_en"), mpp / 3)
-                layers.append({"type": "tint", "geom": gid, "in": e["start"]})
+                layers.append({"type": "tint", "ent": e["id"], "geom": gid, "in": e["start"]})
                 target, fill = g.bounds, P["fit"]["place"]
             t_move = max(a, e["start"] - lead)
             cx, cy, mpp_t = self.fit(target, fill)
@@ -480,7 +480,7 @@ class Planner:
                 bx = view_line.bounds if e["type"] == "route" else g.bounds
                 sx, sy = self.to_screen(cam, (bx[0] + bx[2]) / 2, bx[3])
                 y = max(self.safe["top"] + 60, sy - P["title_above_subject"] * self.H)
-                layers.append(self.anchor({"type": "title", "text": self.short_name(e), "style": "title_on_map",
+                layers.append(self.anchor({"type": "title", "ent": e["id"], "text": self.short_name(e), "style": "title_on_map",
                                            "x": round(float(np.clip(sx, 260, self.W - 260)), 1), "y": round(y, 1),
                                            "in": round(t_in, 3),
                                            # the hook title is fully on screen by 0.3 s in r1
@@ -535,7 +535,7 @@ class Planner:
             y = float(np.clip((y0 + y1) / 2, self.safe["top"] + 200, self.H - self.safe["bottom"] - 200))
             layers.append(self.anchor({"type": "stat", "x": round(x, 1), "y": round(y, 1), "align": "center",
                                        "out": round(t_out, 3),
-                                       "lines": [{"text": n.get("display") or n["quote"], "style": self.stat_style(n),
+                                       "lines": [{"ent": n["id"], "text": n.get("display") or n["quote"], "style": self.stat_style(n),
                                                   "in": round(n["start"] + T["motion"]["number_in"]["start_after_word"], 3),
                                                   # world height: token size in the settled view; it reads smaller
                                                   # while the camera is still zooming in, then grows into place (r1)

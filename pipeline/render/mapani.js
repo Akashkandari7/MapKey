@@ -175,18 +175,38 @@ const MAPANI = (() => {
     const d = TOKENS.motion.text_out.duration;
     return Math.min(1, Math.max(0, (out + d - t) / d));
   }
-  function shadowText(g, st) {
-    const sh = LOOK().stat.shadow;
-    g.shadowColor = rgba(sh.color, sh.opacity); g.shadowBlur = sh.blur; g.shadowOffsetY = sh.offset_y;
-  }
-  // dark halo first (stroke under the fill), then the coloured text with its drop shadow, as in r1
-  function haloText(g, txt, x, y, sizePx, outline) {
-    if (outline) {
-      g.save(); g.shadowColor = 'transparent'; g.lineJoin = 'round';
-      g.lineWidth = outline.width_em * sizePx; g.strokeStyle = rgba(outline.color, outline.opacity);
-      g.strokeText(txt, x, y); g.restore();
+  // Reference text treatment (r1 close-up): no hard outline - a wide soft dark shadow that lifts the text off the
+  // map, a tight one for edge definition, and a vertical gradient fill (bright top, deeper bottom).
+  // baseline: 'top' (stats: glyphs span y..y+size) or 'alphabetic' (titles: glyphs span y-0.75size..y)
+  function softText(g, txt, x, y, sizePx, color, fx, baseline) {
+    if (!txt) return;
+    fx = fx || {};
+    const top = baseline === 'top' ? y + sizePx * .08 : y - sizePx * .74, bot = baseline === 'top' ? y + sizePx * .82 : y;
+    g.save();
+    if (fx.halo) {  // smoky dark halo hugging the glyphs: a thick stroke, blurred (no hard edge anywhere)
+      g.save(); g.filter = `blur(${(fx.halo.blur_em * sizePx).toFixed(1)}px)`; g.lineJoin = 'round';
+      g.lineWidth = fx.halo.width_em * sizePx; g.strokeStyle = `rgba(0,0,0,${fx.halo.opacity})`; g.fillStyle = g.strokeStyle;
+      g.strokeText(txt, x, y + fx.halo.offset_em * sizePx); g.fillText(txt, x, y + fx.halo.offset_em * sizePx); g.restore();
     }
+    for (const sh of [fx.shadow_wide, fx.shadow_tight]) {
+      if (!sh) continue;
+      g.shadowColor = `rgba(0,0,0,${sh.opacity})`; g.shadowBlur = sh.blur_em * sizePx; g.shadowOffsetY = sh.offset_em * sizePx;
+      g.fillStyle = color; g.fillText(txt, x, y);
+    }
+    g.shadowColor = 'transparent';
+    if (fx.gradient) {
+      const gr = g.createLinearGradient(0, top, 0, bot);
+      gr.addColorStop(0, shade(color, fx.gradient.top_lighten)); gr.addColorStop(1, shade(color, -fx.gradient.bottom_darken));
+      g.fillStyle = gr;
+    } else g.fillStyle = color;
     g.fillText(txt, x, y);
+    g.restore();
+  }
+  // lighten (k > 0, towards white) or darken (k < 0, towards black) a hex colour
+  function shade(hex, k) {
+    const n = parseInt(hex.slice(1), 16), ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    const f = v => Math.round(k >= 0 ? v + (255 - v) * k : v * (1 + k));
+    return `rgb(${ch.map(f).join(',')})`;
   }
 
   // Text either sits on the screen (x, y) or lives on the map (X, Y world point + mpp_in = zoom when it appeared):
@@ -203,8 +223,8 @@ const MAPANI = (() => {
     const txt = typed(L.text, t, L.in, L.type_s ?? TOKENS.motion.text_in.duration);
     const p = anchorOf(c, L), grow = L.X === undefined ? 1 + (LOOK().title.grow_per_s || 0) * (t - L.in) : p.k;
     g.save(); g.globalAlpha = a; g.translate(p.x, p.y); g.scale(grow, grow);
-    setFont(g, st); g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.fillStyle = st.color;
-    shadowText(g); haloText(g, txt, 0, 0, st.size, st.outline); g.restore();
+    setFont(g, st); g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+    softText(g, txt, 0, 0, st.size, st.color, st.text_fx, 'alphabetic'); g.restore();
   }
 
   function drawStat(g, c, L, t) {
@@ -222,9 +242,9 @@ const MAPANI = (() => {
     L.lines.forEach((ln, i) => {
       const st = S[ln.style], px = hw[i] * toPx;
       if (t >= ln.in) {
-        setFont(g, st, px); g.fillStyle = st.color; shadowText(g);
+        setFont(g, st, px);
         const txt = st.case === 'upper' ? ln.text.toUpperCase() : ln.text;
-        haloText(g, typed(txt, t, ln.in, TOKENS.motion.number_in.duration), p.x, y, px, S.outline);
+        softText(g, typed(txt, t, ln.in, TOKENS.motion.number_in.duration), p.x, y, px, st.color, S.text_fx, 'top');
       }
       y += px + gw * toPx;
     });
@@ -331,7 +351,7 @@ const MAPANI = (() => {
     let y = -bh / 2 + Bx.pad_y;
     L.lines.forEach((ln, i) => {
       const st = S[ln.style]; setFont(g, st, sizes[i]); g.fillStyle = st.color; g.textAlign = 'center'; g.textBaseline = 'top';
-      shadowText(g); haloText(g, typed(st.case === 'upper' ? ln.text.toUpperCase() : ln.text, t, ln.in, TOKENS.motion.number_in.duration), 0, y, sizes[i], S.outline);
+      softText(g, typed(st.case === 'upper' ? ln.text.toUpperCase() : ln.text, t, ln.in, TOKENS.motion.number_in.duration), 0, y, sizes[i], st.color, S.text_fx, 'top');
       y += sizes[i] * 1.1;
     });
     g.restore();

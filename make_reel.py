@@ -15,7 +15,7 @@ from pathlib import Path
 
 from pipeline.common import ROOT, read_json, write_json
 
-STAGES = ["transcribe", "entities", "geocode", "plan", "render", "captions", "mix", "export"]
+STAGES = ["transcribe", "entities", "geocode", "plan", "render", "review", "captions", "mix", "export"]
 
 
 def stage_transcribe(ep, a):
@@ -60,6 +60,16 @@ def stage_render(ep, a):
     return f"{render(ep, workers=a.workers)}"
 
 
+def stage_review(ep, a):
+    from pipeline.render_stage import render
+    from pipeline.review import review
+    if a.no_review:
+        return "skipped (--no-review)"
+    rep = review(ep, fix=True, rerender=lambda: render(ep, workers=a.workers))
+    return (f"{len(rep['fixed'])} fixed, {len(rep['fails'])} problems left, {len(rep['warnings'])} warnings "
+            f"-> work/{ep.name}/review.md")
+
+
 def stage_captions(ep, a):
     tok = read_json(ROOT / "style/tokens.json")["captions"]
     # the reference reels have no running subtitles; keyword/number/place text is drawn by the render stage
@@ -96,7 +106,7 @@ def stage_export(ep, a):
 
 
 RUN = {"transcribe": stage_transcribe, "entities": stage_entities, "geocode": stage_geocode, "plan": stage_plan,
-       "render": stage_render, "captions": stage_captions, "mix": stage_mix, "export": stage_export}
+       "render": stage_render, "review": stage_review, "captions": stage_captions, "mix": stage_mix, "export": stage_export}
 
 
 def main():
@@ -113,6 +123,7 @@ def main():
     ap.add_argument("--facecam", help="face-cam clip (default: inputs/audio/<episode>_facecam.mp4 if present)")
     ap.add_argument("--music", help="optional music bed (only files you have the rights to)")
     ap.add_argument("--workers", type=int, default=3, help="parallel render workers (3 keeps a laptop cool)")
+    ap.add_argument("--no-review", action="store_true", help="skip the automatic review/fix loop")
     a = ap.parse_args()
     if not a.audio and not a.episode:
         ap.error("give --audio (new episode) or --episode (existing work folder)")
