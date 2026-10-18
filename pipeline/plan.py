@@ -156,6 +156,22 @@ class Planner:
             chain += list(nxt.coords)
         return LineString(chain)
 
+    @staticmethod
+    def chaikin(pts, iterations=3):
+        """Corner-cutting smoothing: rounds the bends between stations but never overshoots them (Catmull-Rom made
+        spikes at sharp turns and added ~20 % length to a planned line); the end points stay where they are."""
+        p = [tuple(x) for x in pts]
+        for _ in range(iterations):
+            if len(p) < 3:
+                break
+            out = [p[0]]
+            for a, b in zip(p, p[1:]):
+                out += [(0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1]),
+                        (0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1])]
+            out.append(p[-1])
+            p = out
+        return LineString(p)
+
     def smooth_through(self, pts, n=24):
         """Catmull-Rom through stop points: an 'approx' route (planned line) drawn as a smooth curve, not a zig-zag."""
         if len(pts) < 3:
@@ -228,7 +244,9 @@ class Planner:
         prev_end = {id(w): (words[k - 1]["end"] if k else a) for k, w in enumerate(words)}
         while True:
             want = t + (lo if i % 2 else hi)
-            cands = [w for w in words if want - 1.0 <= w["start"] <= want + 1.5 and w["start"] < b - 1.5]
+            # never sooner than the minimum spacing after the previous cut (the shot start is a cut too)
+            cands = [w for w in words if max(want - 1.0, t + F["punch"]["min_spacing_s"]) <= w["start"] <= want + 1.5
+                     and w["start"] < b - 1.5]
             if not cands:
                 break
             w = max(cands, key=lambda w: (w["start"] - prev_end[id(w)] >= F["punch"]["min_gap_before_word_s"],
@@ -375,7 +393,9 @@ class Planner:
                 stops = [list(self.geom3857[s].representative_point().coords[0]) for s in (e.get("stops") or [])
                          if s in self.geom3857 and self.geom3857[s].geom_type not in ("LineString", "MultiLineString")]
                 res = next(it["resolved"] for it in self.geo["items"] if it["id"] == e["id"])
-                line = self.smooth_through(stops) if res["method"] == "approx" and len(stops) >= 3 else self.route_line(g, stops)
+                # a line built from station locations is drawn as a smooth curve through them (metro viaducts curve
+                # gently between stations); OSM lines are drawn exactly as mapped
+                line = self.chaikin(list(g.coords), 3) if res["method"] == "stations" else self.route_line(g, stops)
                 # far-reaching lines (Yellow Line runs 50 km into Delhi) are shown where the story is
                 view_line = line.intersection(clip_box) if clip_box is not None and not clip_box.contains(line) else line
                 if view_line.is_empty:
@@ -405,6 +425,11 @@ class Planner:
                     target = (target[0] - pw, target[1] - ph, target[2] + pw, target[3] + ph)
                 else:
                     target = view_line.bounds
+                if res["method"] == "stations":  # the whole announced line is the subject, with room for labels
+                    b0 = view_line.bounds
+                    pw, ph = (b0[2] - b0[0]) * P["stops_margin"], (b0[3] - b0[1]) * P["stops_margin"]
+                    target = (min(target[0], b0[0] - pw), min(target[1], b0[1] - ph),
+                              max(target[2], b0[2] + pw), max(target[3], b0[3] + ph))
                 fill = P["fit"]["route"]
             else:
                 kind = e.get("kind")

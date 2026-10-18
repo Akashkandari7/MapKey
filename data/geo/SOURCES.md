@@ -24,6 +24,13 @@ Checks run on the build (2026-10-18):
   generalisation (it renders as sea).
 - 28 states + 8 union territories.
 
+Planned / under-construction lines that OpenStreetMap doesn't have (e.g. the Gurugram Metro Millennium City-Cyber
+City corridor, Oct 2026): the ordered station list comes from Gemini (cached in data/geo/cache/stations_*.json, with
+its stated basis), each station is placed with OSM Nominatim inside the city, stations that break a 4.5 km
+consecutive-station chain are dropped as name collisions (IMT Manesar's Sector 3/5/9), and the line is drawn only if
+at least 65 % of the stations remain. Such lines are always listed under `needs_review` in geo.json. A line is never
+drawn through guessed points; an official alignment file (KML/GeoJSON) given by the user would replace this.
+
 To be added with the imagery stage: Copernicus Sentinel-2 L2A, NASA Blue Marble, Copernicus DEM GLO-30
 (see `style/STYLE.md` §10). Metro/railway lines, when an episode needs them: OpenStreetMap via Overpass
 (ODbL, "© OpenStreetMap contributors"), cached per query.

@@ -98,6 +98,26 @@ const MAPANI = (() => {
     d.fillStyle = '#000'; d.fill(polyPath(d, c, SCENES.geometry[geomId]), 'evenodd');
     d.filter = 'none'; d.globalCompositeOperation = 'source-over';
     g.drawImage(DIM, 0, 0);
+    drawLift(g, c, SCENES.geometry[geomId]);
+  }
+
+  // The subject looks raised off the map (r1 Gurugram): a soft shadow falls outside its edge, down-right (light from
+  // the top-left), and a thin light rim catches the edge. Shadow only outside: the cut-out keeps the area clean.
+  let LIFT = null;
+  function drawLift(g, c, geom) {
+    const L = LOOK().basemap.lift; if (!L || !L.enabled) return;
+    LIFT = LIFT || makeCanvas(W, H);
+    const d = LIFT.getContext('2d'), path = polyPath(d, c, geom);
+    d.setTransform(1, 0, 0, 1, 0, 0); d.globalCompositeOperation = 'source-over'; d.clearRect(0, 0, W, H);
+    d.filter = `blur(${L.shadow_blur}px)`; d.fillStyle = `rgba(0,0,0,${L.shadow_opacity})`;
+    d.save(); d.translate(L.shadow_dx, L.shadow_dy); d.fill(path, 'evenodd'); d.restore();
+    d.filter = 'none'; d.globalCompositeOperation = 'destination-out'; d.fill(path, 'evenodd');
+    d.globalCompositeOperation = 'source-over';
+    g.drawImage(LIFT, 0, 0);
+    if (L.rim_opacity > 0) {
+      g.save(); g.lineJoin = 'round'; g.lineWidth = L.rim_width; g.strokeStyle = `rgba(255,255,255,${L.rim_opacity})`;
+      g.stroke(path); g.restore();
+    }
   }
 
   function drawVignette(g) {

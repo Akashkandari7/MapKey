@@ -78,11 +78,54 @@ def face_center(clip, t0, t1, n=7):
     return float(np.median(a[:, 0])), float(np.median(a[:, 1]))
 
 
+def clip_cuts(clip, t0, t1):
+    """Cuts already in the face-cam clip between t0 and t1 (clip time): hard scene changes or zoom jumps (an editor's
+    own punch-ins). Our punch-ins must not land next to these: two cuts within a second read as a glitch."""
+    import cv2
+    from pipeline.style_capture.measure import cam_motion, AW, AH
+    cap = cv2.VideoCapture(str(clip))
+    cap.set(cv2.CAP_PROP_POS_MSEC, max(0, t0) * 1000)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    cuts, prev, prev_h, t = [], None, None, max(0, t0)
+    while t < t1:
+        ok, f = cap.read()
+        if not ok:
+            break
+        g = cv2.cvtColor(cv2.resize(f, (AW, AH)), cv2.COLOR_BGR2GRAY)
+        h = cv2.calcHist([g], [0], None, [32], [0, 256]); cv2.normalize(h, h)
+        if prev is not None:
+            jump = cv2.compareHist(prev_h, h, cv2.HISTCMP_BHATTACHARYYA) > 0.3
+            m = None if jump else cam_motion(prev, g)
+            if jump or (m and abs(m["zoom"] - 1) > 0.05):
+                cuts.append(t)
+        prev, prev_h, t = g, h, t + 1 / fps
+    cap.release()
+    return cuts
+
+
+def choose_punches(shot, clip, clip_off, F):
+    """Keep the planner's punch-ins that are >= F punch.min_spacing_s from each other and >= clear_of_clip_cuts_s from
+    the clip's own cuts (times relative to the shot start)."""
+    P = F["punch"]
+    own = [c - (shot["start"] - clip_off) for c in clip_cuts(clip, shot["start"] - clip_off, shot["end"] - clip_off)]
+    kept = [shot["punches"][0]]
+    for p in shot["punches"][1:]:
+        if p["t"] - kept[-1]["t"] < P["min_spacing_s"]:
+            continue
+        if any(abs(p["t"] - c) < P["clear_of_clip_cuts_s"] for c in own):
+            continue
+        kept.append(dict(p, scale=P["scales"][len(kept) % len(P["scales"])]))
+    return kept, own
+
+
 def zoom_filter(shot, clip, clip_off, W, H, fps, F):
-    """zoompan expression for a face-cam shot: punch-in cuts (scale steps) with a slow push between them, each
-    segment centred on the face (face at F['face_y'] of the frame height). Times are relative to the shot start."""
+    """Face-cam zoom without shake: the frame is scaled per frame (sub-pixel, bicubic) on a 2x canvas, cropped around
+    the face and scaled down - zoompan rounded its window to whole pixels and doubled the frame-to-frame jitter.
+    Punch-in cuts (scale steps) with a slow push between them; times are relative to the shot start."""
     dur = shot["end"] - shot["start"]
-    punches = shot.get("punches") or [{"t": 0.0, "scale": 1.0}]
+    punches, own = choose_punches(shot, clip, clip_off, F) if shot.get("punches") else ([{"t": 0.0, "scale": 1.0}], [])
+    print(f"[assemble] face-cam: clip's own cuts at {[round(c, 1) for c in own]} s; our punch-ins at "
+          f"{[p['t'] for p in punches[1:]]} s (shot time)")
     segs = []
     for i, p in enumerate(punches):
         t0, t1 = p["t"], (punches[i + 1]["t"] if i + 1 < len(punches) else dur)
@@ -90,18 +133,18 @@ def zoom_filter(shot, clip, clip_off, W, H, fps, F):
         segs.append((t0, t1, p["scale"], fx, fy))
     push = F["push_per_shot"]
 
-    def nest(f):  # if(lt(it,t1), seg0, if(lt(it,t2), seg1, ...))
+    def nest(f):  # if(lt(t,t1), seg0, if(lt(t,t2), seg1, ...))
         expr = f(segs[-1])
-        for s in reversed(segs[:-1]):
-            expr = f"if(lt(it,{s[1]:.3f}),{f(s)},{expr})"
+        for sg in reversed(segs[:-1]):
+            expr = f"if(lt(t,{sg[1]:.3f}),{f(sg)},{expr})"
         return expr
-    z = nest(lambda s: f"{s[2]:.4f}*(1+{push:.4f}*(it-{s[0]:.3f})/{max(0.5, s[1] - s[0]):.3f})")
-    fxs = nest(lambda s: f"{s[3]:.4f}")
-    fys = nest(lambda s: f"{s[4]:.4f}")
-    x = f"max(0,min(iw-iw/zoom,({fxs})*iw-iw/zoom/2))"
-    y = f"max(0,min(ih-ih/zoom,({fys})*ih-{F['face_y']}*ih/zoom))"
+    z = nest(lambda sg: f"{sg[2]:.4f}*(1+{push:.4f}*(t-{sg[0]:.3f})/{max(0.5, sg[1] - sg[0]):.3f})")
+    fxs, fys = nest(lambda sg: f"{sg[3]:.4f}"), nest(lambda sg: f"{sg[4]:.4f}")
+    W2, H2 = W * 2, H * 2
     g = F["grade"]
-    return (f"zoompan=z='{z}':x='{x}':y='{y}':d=1:s={W}x{H}:fps={fps},"
+    return (f"scale=w='trunc({W2}*({z})/2)*2':h='trunc({H2}*({z})/2)*2':eval=frame:flags=bicubic,"
+            f"crop={W2}:{H2}:x='max(0,min(iw-{W2},({fxs})*iw-{W2}/2))':y='max(0,min(ih-{H2},({fys})*ih-{F['face_y']}*{H2}))',"
+            f"scale={W}:{H}:flags=lanczos,"
             f"eq=contrast={g['contrast']}:saturation={g['saturation']}:gamma={g['gamma']},"
             f"vignette=angle={g['vignette']}")
 
@@ -162,9 +205,6 @@ def assemble(ep, facecam=None, music=None, out=None, raw=None):
         inputs += ["-i", str(facecam)]
         parts, prev = [], "base"
         rd = ep / "render" / "out"
-        # zoom on a slightly larger frame than the output (smoother push, less upscaling blur); 1.25x keeps it quick
-        ss = tokens["facecam"].get("supersample", 1.25)
-        ss_w, ss_h = int(round(W * ss / 2) * 2), int(round(H * ss / 2) * 2)
         for i, s in enumerate(cam_shots):
             cs, ce = s["start"] - off, s["end"] - off  # clip-time window for this shot
             # the clip may begin a moment after the shot (the planner cuts on the narration's sentence, the clip starts
@@ -175,7 +215,7 @@ def assemble(ep, facecam=None, music=None, out=None, raw=None):
             zf = zoom_filter(s, facecam, off, W, H, fps, tokens["facecam"])
             vf += (f";[1:v]trim=start={max(0, cs):.3f}:end={ce:.3f},setpts=PTS-STARTPTS,"
                    f"tpad=start_duration={gap:.3f}:start_mode=clone,fps={fps},"
-                   f"scale={ss_w}:{ss_h}:force_original_aspect_ratio=increase,crop={ss_w}:{ss_h},setsar=1,"
+                   f"scale={W * 2}:{H * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{H * 2},setsar=1,"
                    f"{zf},setpts=PTS-STARTPTS+{s['start'] - off0:.3f}/TB[{lbl}]")
             ov = rd / f"overlay_{s['id']}"
             if ov.exists() and any(ov.glob("f*.png")):  # popups / buttons drawn by the renderer, transparent

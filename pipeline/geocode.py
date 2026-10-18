@@ -505,7 +505,96 @@ def route_keys(name):
     return out
 
 
-def resolve_route(db, ent, resolved_places, offline=False):
+STATIONS_PROMPT = """List the stations of this rail/metro line in travel order, as officially announced or built.
+Line: {name}
+City/area: {area}
+Context from the narration: {quote}
+Rules: only real station names you are confident about (as on official maps/announcements); include both ends;
+if the line is planned, give the announced station list; if you don't know the list, return an empty list.
+Give each station's English name as it would be found on a map (e.g. "Sector 45", "Subhash Chowk", "Cyber City")."""
+
+STATIONS_SCHEMA = {"type": "object", "properties": {
+    "stations": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    "note": {"type": "string", "description": "what the list is based on (e.g. 'GMRL announced alignment, phase 2 provisional')"}},
+    "required": ["stations", "confidence"]}
+
+
+def planned_stations(ent, area):
+    """Ordered station names for a line OSM doesn't have (planned / under construction), from the LLM; cached."""
+    from pipeline.common import require_env
+    CACHE.mkdir(parents=True, exist_ok=True)
+    key = sha("stations", ent.get("name_en"), area, 1)
+    f = CACHE / f"stations_{key}.json"
+    if f.exists():
+        return json.loads(f.read_text(encoding="utf-8"))
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=require_env("GEMINI_API_KEY", "needed to look up a planned line's stations"))
+    resp = client.models.generate_content(
+        model="gemini-3.8-flash",
+        contents=STATIONS_PROMPT.format(name=ent.get("name_en"), area=area, quote=ent.get("quote", "")),
+        config=types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json",
+                                           response_json_schema=STATIONS_SCHEMA,
+                                           thinking_config=types.ThinkingConfig(thinking_level="medium")))
+    data = json.loads(resp.text)
+    f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return data
+
+
+def route_from_stations(db, ent, area, near, area_geom=None):
+    """A planned line drawn through its stations' real locations (geocoded one by one), never through guesses.
+    Returns (LineString, details) or (None, details) if too few stations could be placed."""
+    info = planned_stations(ent, area)
+    names = info.get("stations") or []
+    pts, placed, missed = [], [], []
+    for n in names:
+        # no lat/lon hint here: the stations spread over the whole line (15+ km), the 40 km check below is the fence
+        r = resolve_place(db, {"name_en": n, "kind": "neighbourhood" if re.match(r"(?i)sector|phase", n) else "metro_station",
+                               "country": ent.get("country") or "IN", "parent": area, "visual": "pin",
+                               "_context": [area]})
+        inside = area_geom is None or area_geom.buffer(0.02).contains(Point(r["label_point"])) if r else False
+        # same-named sectors exist in neighbouring cities (Sector 4: Gurugram, Dwarka, Faridabad) -> must be in the city
+        if r and r["confidence"] >= 0.5 and inside and haversine(near[0], near[1], *r["label_point"]) < 40:
+            pts.append(tuple(r["label_point"]))
+            placed.append(n)
+        else:
+            missed.append(n)
+    # Name collisions still slip through (IMT Manesar has its own Sector 3/5/9 inside Gurugram district). Metro stations
+    # are 1-2.5 km apart, so keep the longest in-order chain whose every step is <= MAX_STEP_KM; the rest are outliers.
+    keep = longest_chain(pts, MAX_STEP_KM)
+    outliers = [placed[i] for i in range(len(placed)) if i not in keep]
+    pts, placed = [pts[i] for i in keep], [placed[i] for i in keep]
+    details = {"stations": names, "placed": placed, "missed": missed, "outliers": outliers,
+               "list_confidence": info.get("confidence"), "list_note": info.get("note")}
+    if len(names) >= 3 and len(placed) >= MIN_STATIONS_SHARE * len(names):
+        return LineString(pts), details
+    return None, details
+
+
+MAX_STEP_KM = 4.5          # max distance between consecutive drawn stations (a skipped station or two included)
+MIN_STATIONS_SHARE = 0.65  # draw a planned line only if at least this share of its stations is placed and consistent
+
+
+def longest_chain(pts, max_km):
+    """Indices of the longest subsequence (order kept) whose consecutive points are <= max_km apart (O(n^2) DP)."""
+    n = len(pts)
+    if not n:
+        return []
+    best, prev = [1] * n, [-1] * n
+    for j in range(n):
+        for i in range(j):
+            if best[i] + 1 > best[j] and haversine(pts[i][0], pts[i][1], pts[j][0], pts[j][1]) <= max_km:
+                best[j], prev[j] = best[i] + 1, i
+    j = max(range(n), key=lambda k: best[k])
+    out = []
+    while j != -1:
+        out.append(j)
+        j = prev[j]
+    return out[::-1]
+
+
+def resolve_route(db, ent, resolved_places, offline=False, area=None, area_geom=None):
     stops = []
     for s in ent.get("stops") or []:
         if s in resolved_places and resolved_places[s]:
@@ -531,9 +620,20 @@ def resolve_route(db, ent, resolved_places, offline=False):
     if geom is not None and not geom.is_empty:
         return pack(geom, "OpenStreetMap Overpass (ODbL)", "overpass", 0.8, ent.get("name_en"),
                     {"stops": stops, "mode": ent.get("mode")})
-    if len(stops) >= 2:
-        return pack(LineString(stops), "straight line through stops", "approx", 0.3, ent.get("name_en"),
-                    {"stops": stops, "mode": ent.get("mode")})
+    # Not in OSM (a planned / under-construction line): draw it through its stations' real locations. A line is
+    # never drawn through guessed points - if the stations can't be placed, the route is left out (its pins stay).
+    if not offline and centre and ent.get("mode") in ("metro", "rail") and area:
+        try:
+            line, det = route_from_stations(db, ent, area, centre, area_geom)
+        except Exception as e:  # noqa: BLE001
+            line, det = None, {"error": str(e)}
+        print(f"[geocode] {ent.get('name_en')!r}: stations placed {len(det.get('placed', []))}/{len(det.get('stations', []))}"
+              f" ({det.get('list_confidence')}: {det.get('list_note')}); missed {det.get('missed')}")
+        if line is not None:
+            conf = 0.6 if det.get("list_confidence") == "high" else 0.45
+            return pack(line, "station list (LLM) + OpenStreetMap station locations", "stations", conf,
+                        ent.get("name_en"), {"stops": stops, "mode": ent.get("mode"), "stations": det})
+    print(f"[geocode] {ent.get('name_en')!r}: no reliable geometry - the line will NOT be drawn (only its places)")
     return None
 
 
@@ -573,7 +673,9 @@ def geocode(entities, offline=False):
     for e in entities["entities"]:
         if e["type"] != "route":
             continue
-        r = resolve_route(db, e, resolved, offline)
+        main_r = resolved.get(entities.get("main_place"))
+        r = resolve_route(db, e, resolved, offline, area=main_name,
+                          area_geom=shape(main_r["geometry"]) if main_r and main_r["geometry"]["type"] in ("Polygon", "MultiPolygon") else None)
         out.append({"id": e["id"], "type": "route", "name_en": e.get("name_en"), "mode": e.get("mode"), "start": e["start"],
                     "resolved": r})
         tag = f"{r['method']} conf {r['confidence']}" if r else "NOT FOUND"
@@ -582,7 +684,7 @@ def geocode(entities, offline=False):
     # low confidence = an approximate point/line (LLM coordinates, straight line through stops): render it, but show
     # it in the review report so a wrong or crude shape never ships unnoticed
     review = [{"id": x["id"], "name": x["name_en"], "method": x["resolved"]["method"], "confidence": x["resolved"]["confidence"]}
-              for x in out if x["resolved"] and x["resolved"]["confidence"] < 0.5]
+              for x in out if x["resolved"] and (x["resolved"]["confidence"] < 0.5 or x["resolved"]["method"] == "stations")]
     for r in review:
         print(f"[geocode] REVIEW {r['id']} {r['name']!r}: only {r['method']} (confidence {r['confidence']})")
     return {"entities_file": entities.get("transcript"), "items": sorted(out, key=lambda x: x["start"]),
