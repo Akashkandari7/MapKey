@@ -22,9 +22,15 @@ def outline_3857():
 
 
 def is_india(geom, lonlat=True):
-    """True if the shape IS India (its own outline), not just touching it."""
+    """True if the shape is India or part of it (a state, a city, an island): mostly inside the SoI outline. A foreign
+    shape that spills over the border (China over Aksai Chin) is mostly outside, so it is not."""
     ref = outline_lonlat() if lonlat else outline_3857()
-    return geom.geom_type in ("Polygon", "MultiPolygon") and geom.intersection(ref).area > 0.9 * ref.area
+    if geom.geom_type not in ("Polygon", "MultiPolygon") or geom.area <= 0:
+        return False
+    if not geom.is_valid:  # e.g. a set of touching provinces kept as separate parts
+        from shapely.validation import make_valid
+        geom = make_valid(geom)
+    return geom.intersection(ref).area > 0.5 * geom.area
 
 
 def clip_out(geom, lonlat=True):

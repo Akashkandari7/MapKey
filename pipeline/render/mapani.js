@@ -50,6 +50,11 @@ const MAPANI = (() => {
       await new Promise((ok, bad) => { im.onload = ok; im.onerror = () => bad(new Error('basemap failed to load: ' + lv.file)); im.src = lv.file; });
       IMG[lv.file] = await createImageBitmap(im);
     }
+    for (const s of SCENES.shots) for (const L of s.layers || []) if (L.type === 'picture' && !IMG[L.file]) {
+      const im = new Image();
+      await new Promise((ok, bad) => { im.onload = ok; im.onerror = () => bad(new Error('picture failed to load: ' + L.file)); im.src = L.file; });
+      IMG[L.file] = await createImageBitmap(im);
+    }
     // per-geometry cumulative lengths for progressive route drawing
     for (const g of Object.values(SCENES.geometry)) if (g.kind === 'polygon') {
       let x0 = Infinity, x1 = -Infinity;
@@ -210,9 +215,31 @@ const MAPANI = (() => {
     g.font = `${f.style || 'normal'} ${f.weight} ${s}px "${f.family}"`;
     g.letterSpacing = `${((f.tracking || 0) * s).toFixed(2)}px`;
   }
-  function typed(text, t, tin, dur) {
-    const u = Math.min(1, Math.max(0, (t - tin) / dur));
-    return text.slice(0, Math.round(u * text.length));
+  // Text comes in with a soft left-to-right wipe (a feathered edge sweeping across the whole line) and a slight rise,
+  // instead of letters popping in one by one (2026-10-19 user: the typing looked too fast and jerky).
+  let OFFC = null;
+  function revealText(g, txt, t, tin, dur, sizePx, x, y, drawFn) {
+    const R = TOKENS.motion.text_reveal;
+    const raw = Math.min(1, Math.max(0, (t - tin) / (dur || R.duration)));
+    if (raw <= 0 || !txt) return;
+    const u = EASE[R.ease](raw), rise = (1 - u) * R.rise_em * sizePx;
+    if (raw >= 1) return drawFn(g, x, y);
+    OFFC = OFFC || makeCanvas(W, H);
+    const o = OFFC.getContext('2d');
+    o.setTransform(1, 0, 0, 1, 0, 0); o.globalCompositeOperation = 'source-over'; o.clearRect(0, 0, W, H);
+    o.setTransform(g.getTransform());
+    o.font = g.font; o.letterSpacing = g.letterSpacing; o.textAlign = g.textAlign; o.textBaseline = g.textBaseline;
+    o.globalAlpha = 1; o.filter = 'none';
+    drawFn(o, x, y + rise);
+    const w = g.measureText(txt).width, F = R.feather_em * sizePx;
+    const left = g.textAlign === 'center' ? x - w / 2 : g.textAlign === 'right' ? x - w : x;
+    const edge = left - F + u * (w + 2 * F);
+    const grd = o.createLinearGradient(edge - F, 0, edge, 0);
+    grd.addColorStop(0, 'rgba(0,0,0,1)'); grd.addColorStop(1, 'rgba(0,0,0,0)');
+    o.globalCompositeOperation = 'destination-in'; o.fillStyle = grd;
+    o.fillRect(left - 4 * sizePx, y - 4 * sizePx, w + 8 * sizePx, 8 * sizePx);
+    o.globalCompositeOperation = 'source-over';
+    g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(OFFC, 0, 0); g.restore();
   }
   function fadeOut(t, out) {
     if (out === undefined || out === null) return 1;
@@ -264,11 +291,13 @@ const MAPANI = (() => {
     if (t < L.in) return;
     const st = LOOK()[L.style] || LOOK().title_on_map, a = fadeOut(t, L.out);
     if (a <= 0) return;
-    const txt = typed(L.text, t, L.in, L.type_s ?? TOKENS.motion.text_in.duration);
+    // the hook title is on screen almost at once (r1), so its wipe is quicker
+    const dur = (L.type_s ?? 1) < 0.3 ? TOKENS.motion.text_reveal.hook_duration : TOKENS.motion.text_reveal.duration;
     const p = anchorOf(c, L), grow = L.X === undefined ? 1 + (LOOK().title.grow_per_s || 0) * (t - L.in) : p.k;
     g.save(); g.globalAlpha = a; g.translate(p.x, p.y); g.scale(grow, grow);
     setFont(g, st); g.textAlign = 'center'; g.textBaseline = 'alphabetic';
-    softText(g, txt, 0, 0, st.size, st.color, st.text_fx, 'alphabetic'); g.restore();
+    revealText(g, L.text, t, L.in, dur, st.size, 0, 0, (c, x, y) => softText(c, L.text, x, y, st.size, st.color, st.text_fx, 'alphabetic'));
+    g.restore();
   }
 
   function drawStat(g, c, L, t) {
@@ -288,7 +317,7 @@ const MAPANI = (() => {
       if (t >= ln.in) {
         setFont(g, st, px);
         const txt = st.case === 'upper' ? ln.text.toUpperCase() : ln.text;
-        softText(g, typed(txt, t, ln.in, TOKENS.motion.number_in.duration), p.x, y, px, ln.color || st.color, S.text_fx, 'top');
+        revealText(g, txt, t, ln.in, null, px, p.x, y, (c, x, yy) => softText(c, txt, x, yy, px, ln.color || st.color, S.text_fx, 'top'));
       }
       y += px + gw * toPx;
     });
@@ -322,6 +351,38 @@ const MAPANI = (() => {
     g.restore();
   }
 
+  // A photo of the place, popping up on its name: rounded card, thin white border, deep soft shadow, a slow push-in
+  // inside the frame, the place name on a dark fade at the bottom and the photo's credit (author + licence).
+  function drawPicture(g, L, t) {
+    if (t < L.in) return;
+    const a = fadeOut(t, L.out); if (a <= 0) return;
+    const P = LOOK().picture, im = IMG[L.file];
+    const u = Math.min(1, (t - L.in) / P.pop_s), e = EASE.easeOutCubic(u), s = 0.9 + 0.1 * EASE.backOut(u);
+    const w = L.w, h = L.h, r = P.radius;
+    g.save(); g.globalAlpha = a * Math.min(1, u * 1.6);
+    g.translate(L.x, L.y + (1 - e) * 24); g.scale(s, s);
+    g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 40; g.shadowOffsetY = 16;
+    g.fillStyle = '#ffffff'; g.beginPath(); g.roundRect(-w / 2 - P.border, -h / 2 - P.border, w + 2 * P.border, h + 2 * P.border, r + P.border); g.fill();
+    g.shadowColor = 'transparent';
+    g.save(); g.beginPath(); g.roundRect(-w / 2, -h / 2, w, h, r); g.clip();
+    const life = Math.max(0.5, (L.out ?? L.in + 3) - L.in + 0.3), k = 1 + P.ken_burns * Math.min(1, (t - L.in) / life);
+    const sc = Math.max(w / im.width, h / im.height) * k;
+    g.drawImage(im, -im.width * sc / 2, -im.height * sc / 2, im.width * sc, im.height * sc);
+    const grd = g.createLinearGradient(0, h / 2 - h * .42, 0, h / 2);
+    grd.addColorStop(0, 'rgba(0,0,0,0)'); grd.addColorStop(1, 'rgba(0,0,0,.72)');
+    g.fillStyle = grd; g.fillRect(-w / 2, -h / 2, w, h);
+    g.restore();
+    if (L.caption) {
+      setFont(g, { font: TOKENS.looks[SCENES.look].title_on_map.font, size: P.caption_size }); g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+      softText(g, L.caption, -w / 2 + 24, h / 2 - 24, P.caption_size, '#FFFFFF', LOOK().title_on_map.text_fx, 'alphabetic');
+    }
+    if (L.credit) {
+      g.font = `500 ${P.credit_size}px "Inter"`; g.textAlign = 'right'; g.textBaseline = 'alphabetic'; g.fillStyle = 'rgba(255,255,255,.72)';
+      g.fillText(L.credit, w / 2 - 16, h / 2 - 14);
+    }
+    g.restore();
+  }
+
   function drawCredit(g) {
     if (!SCENES.credits || !SCENES.credits.length) return;
     g.save(); g.font = `500 15px "Inter"`; g.fillStyle = 'rgba(255,255,255,.38)'; g.textAlign = 'left'; g.textBaseline = 'bottom';
@@ -346,6 +407,7 @@ const MAPANI = (() => {
     for (const L of shot.layers) if (L.type === 'pin') drawPin(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'title') drawTitle(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'stat') drawStat(g, c, L, t);
+    for (const L of shot.layers) if (L.type === 'picture') drawPicture(g, L, t);
     drawCredit(g);
   }
 
@@ -397,7 +459,8 @@ const MAPANI = (() => {
     let y = -bh / 2 + Bx.pad_y;
     L.lines.forEach((ln, i) => {
       const st = S[ln.style]; setFont(g, st, sizes[i]); g.fillStyle = st.color; g.textAlign = 'center'; g.textBaseline = 'top';
-      softText(g, typed(st.case === 'upper' ? ln.text.toUpperCase() : ln.text, t, ln.in, TOKENS.motion.number_in.duration), 0, y, sizes[i], st.color, S.text_fx, 'top');
+      const txt = st.case === 'upper' ? ln.text.toUpperCase() : ln.text, sz = sizes[i];
+      revealText(g, txt, t, ln.in, null, sz, 0, y, (c, x, yy) => softText(c, txt, x, yy, sz, st.color, S.text_fx, 'top'));
       y += sizes[i] * 1.1;
     });
     g.restore();

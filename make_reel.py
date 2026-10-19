@@ -52,7 +52,9 @@ def stage_plan(ep, a):
     sc = Planner(ep, read_json(ROOT / "style/tokens.json")).plan()
     validate(sc)
     write_json(ep / "scenes.json", sc)
-    return f"{len(sc['shots'])} shots, {sum(len(s.get('layers', [])) for s in sc['shots'])} layers"
+    from pipeline.pictures import add as add_pictures  # needs the written plan: cards go where no text is
+    n_pics = 0 if a.offline else add_pictures(ep)
+    return f"{len(sc['shots'])} shots, {sum(len(s.get('layers', [])) for s in sc['shots'])} layers, {n_pics} pictures"
 
 
 def stage_render(ep, a):

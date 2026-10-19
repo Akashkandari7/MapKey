@@ -142,6 +142,18 @@ def prepare(ep, scenes_path, tokens):
         levels.append({"file": name, "res_m": lv["res_m"], "bounds_3857": meta["bounds_3857"]})
         credits.add(meta["credit"])
     sc["imagery"] = levels
+    # picture cards: cropped to the card's shape at 1.2x its size (room for the slow push-in), copied next to the page
+    from PIL import Image, ImageOps
+    for shot in sc["shots"]:
+        for L in shot.get("layers", []):
+            if L["type"] != "picture":
+                continue
+            src = ROOT / L["src"]
+            name = f"img/pic_{sha(L['src'], L['w'], L['h'])}.jpg"
+            if not (rd / name).exists():
+                size = (round(L["w"] * 1.2), round(L["h"] * 1.2))
+                ImageOps.fit(Image.open(src).convert("RGB"), size, Image.LANCZOS).save(rd / name, quality=92)
+            L["file"] = name
     if any(it["resolved"] and "OpenStreetMap" in it["resolved"]["source"] for it in read_json(ep / "geo.json")["items"]):
         credits.add("© OpenStreetMap contributors")
     sc["credits"] = sorted(credits)

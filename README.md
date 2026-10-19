@@ -111,6 +111,10 @@ Fixed problems trigger a re-render and a second check (max 2 rounds). Read `work
   ..." fills exactly the places named after the count, each on its word, in one colour per group. Land the country
   claims but doesn't hold (Taiwan for China) gets a dashed outline, never a fill. If the total is said again at the
   end, a recap lists every group in its colour.
+- **Picture cards.** Each place named over the map gets a landmark photo card (Gemini picks the landmark, e.g. Tibet ->
+  Potala Palace). Only Wikimedia Commons photos under PD / CC0 / CC BY / CC BY-SA, credited on the card; photos with
+  faces or people are skipped, and a foreign place is never illustrated with a photo from India. Cards go in the top
+  or bottom band, wherever no label or number is. Turn off: `looks.<look>.picture.enabled = false` in tokens.
 
 ## 6. Change the style
 

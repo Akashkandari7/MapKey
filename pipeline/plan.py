@@ -34,7 +34,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from shapely.geometry import LineString, MultiLineString, Point, box, shape
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, box, shape
 from shapely.ops import linemerge, polylabel, unary_union
 
 from pipeline.common import ROOT, read_json, write_json
@@ -53,7 +53,7 @@ SCHEMA = {
                 "start": {"type": "number"}, "end": {"type": "number"},
                 "camera": {"type": "array", "items": {"type": "object", "required": ["t", "x", "y", "mpp"]}},
                 "layers": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {
-                    "type": {"enum": ["route", "tint", "fill", "outline", "pin", "title", "stat", "button"]}}}},
+                    "type": {"enum": ["route", "tint", "fill", "outline", "pin", "title", "stat", "button", "picture"]}}}},
                 "punches": {"type": "array", "items": {"type": "object", "required": ["t", "scale"]}}}}},
     },
 }
@@ -224,7 +224,11 @@ class Planner:
         from pipeline.geo.india import clip_out
         g = g.simplify(tol, preserve_topology=True) if tol > 0 else g
         if kind == "polygon":
-            g = clip_out(g, lonlat=False)  # India rule: nothing but India may cover the SoI outline
+            # India rule: nothing but India may cover the SoI outline. Part by part: an overlay of the whole set would
+            # dissolve the borders between touching units (a country's provinces drawn as one outline)
+            from pipeline.geo.india import is_india
+            parts = [g] if is_india(g, lonlat=False) else [clip_out(p, lonlat=False) for p in getattr(g, "geoms", [g])]
+            g = MultiPolygon([q for p in parts for q in getattr(p, "geoms", [p]) if q.geom_type == "Polygon" and not q.is_empty])
         if kind == "point":
             coords = [round(g.x, 1), round(g.y, 1)]
         elif kind == "line":
@@ -293,7 +297,9 @@ class Planner:
             if not units and not members:
                 if not groups and len(a1):
                     groups.append({"n": n, "total": True, "members": [], "units": [],
-                                   "all": unary_union([geom_to_3857(g) for g in a1.geometry])})
+                                   # every unit kept separate (not dissolved) so the borders between them are drawn
+                                   "all": MultiPolygon([p for g in a1.geometry for p in
+                                                        getattr(geom_to_3857(g), "geoms", [geom_to_3857(g)])])})
                 continue
             k = sum(1 for g in groups if not g.get("total"))
             groups.append({"n": n, "members": members, "units": list(units.values()), "color": colors[k % len(colors)]})
@@ -780,12 +786,15 @@ class Planner:
             bh = sum(S[st]["size"] for _, st in texts) + P["stat_line_gap"] * self.H * (len(texts) - 1)
             left, right = x0 - self.safe["left"], (self.W - self.safe["right"]) - x1
             top, bottom = y0 - self.safe["top"], (self.H - self.safe["bottom"]) - y1
-            if max(top, bottom, left, right) < min(bh, bw) + 2 * m:
-                # the subject fills the frame (a deep zoom): the block goes to the top of the frame, off the labels
-                x, y = self.W / 2, self.safe["top"] + bh / 2 + 40
+            if max(top, bottom, left, right) < min(bh, bw) + 2 * m or (x1 - x0) * (y1 - y0) > 0.5 * self.W * self.H:
+                # the subject fills the frame (a deep zoom): the block goes to the bottom band, off the labels (the
+                # top band is where a picture card goes)
+                x, y = self.W / 2, self.H - self.safe["bottom"] - bh / 2 - 60
             elif max(top, bottom) >= bh + 2 * m and max(top, bottom) > max(left, right) * 1.5:
                 x = (x0 + x1) / 2
-                y = y1 + m + bh / 2 if bottom >= top else y0 - m - bh / 2
+                # room for the place labels that hang below / above the subject's edge
+                pad = self.L["label_pill"]["size"] + 2 * self.L["label_pill"]["pad_y"] + self.L["station"]["dot_radius"] + 10
+                y = y1 + m + pad + bh / 2 if bottom >= top else y0 - m - pad - bh / 2
             else:
                 x = x0 - m - bw / 2 if left >= right else x1 + m + bw / 2
                 y = (y0 + y1) / 2
@@ -839,6 +848,9 @@ class Planner:
             if k_zoom < 0.9 or k_zoom > P["stat_world_max_zoom"]:
                 for ln in lines:
                     ln.pop("h_world")
+                if k_zoom > P["stat_world_max_zoom"]:  # the map moves a lot under it: the empty bottom band
+                    bh = sum(S[ln["style"]]["size"] for ln in lines) + P["stat_line_gap"] * self.H * (len(lines) - 1)
+                    layer["x"], layer["y"] = self.W / 2, round(self.H - self.safe["bottom"] - bh / 2 - 60, 1)
                 layers.append(layer)
             else:
                 layers.append(self.anchor(layer, cam, S))

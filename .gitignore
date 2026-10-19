@@ -44,3 +44,6 @@ audio/
 *.jpeg
 *.png
 *.webp
+
+# downloaded photos (Wikimedia Commons, credited on screen); re-fetched on demand
+data/pictures/
