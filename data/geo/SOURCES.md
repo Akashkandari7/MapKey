@@ -31,6 +31,11 @@ consecutive-station chain are dropped as name collisions (IMT Manesar's Sector 3
 at least 65 % of the stations remain. Such lines are always listed under `needs_review` in geo.json. A line is never
 drawn through guessed points; an official alignment file (KML/GeoJSON) given by the user would replace this.
 
-To be added with the imagery stage: Copernicus Sentinel-2 L2A, NASA Blue Marble, Copernicus DEM GLO-30
-(see `style/STYLE.md` §10). Metro/railway lines, when an episode needs them: OpenStreetMap via Overpass
+Imagery (`pipeline/imagery.py`): Copernicus Sentinel-2 L2A median mosaics for city and region views (<= 160 m/px),
+and NASA Blue Marble (shaded relief + bathymetry, public domain) for country and continent views (611-9784 m/px),
+fetched as Web Mercator tiles from NASA GIBS (https://gibs.earthdata.nasa.gov, no login), cached in
+`data/geo/cache/imagery/gibs/`. Neither carries borders: every border on screen comes from the layers above.
+Land shapes for fills: a unit's land polygon from Natural Earth admin-1 / admin-0 is used instead of an OSM boundary
+that includes sea (Hong Kong, Macau), then clipped to the Survey of India outline like everything else.
+Still to add when needed: Copernicus DEM GLO-30 (see `style/STYLE.md` §10). Metro/railway lines, when an episode needs them: OpenStreetMap via Overpass
 (ODbL, "© OpenStreetMap contributors"), cached per query.

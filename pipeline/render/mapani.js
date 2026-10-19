@@ -51,6 +51,11 @@ const MAPANI = (() => {
       IMG[lv.file] = await createImageBitmap(im);
     }
     // per-geometry cumulative lengths for progressive route drawing
+    for (const g of Object.values(SCENES.geometry)) if (g.kind === 'polygon') {
+      let x0 = Infinity, x1 = -Infinity;
+      for (const poly of g.coords) for (const [X] of poly[0]) { x0 = Math.min(x0, X); x1 = Math.max(x1, X); }
+      g.width = x1 - x0;
+    }
     for (const g of Object.values(SCENES.geometry)) if (g.kind === 'line') {
       const L = [0]; for (let i = 1; i < g.coords.length; i++) L.push(L[i - 1] + Math.hypot(g.coords[i][0] - g.coords[i - 1][0], g.coords[i][1] - g.coords[i - 1][1]));
       g.len = L;
@@ -72,7 +77,10 @@ const MAPANI = (() => {
       if (ix1 <= ix0 || iy1 <= iy0) continue;
       const srcX = (ix0 - bx0) / r, srcY = (by1 - iy1) / r, srcW = (ix1 - ix0) / r, srcH = (iy1 - iy0) / r;
       g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+      // a finer level fades in as the camera zooms towards it (no hard switch, no visible edge of its area)
+      g.globalAlpha = lv === levels[0] ? 1 : Math.min(1, Math.max(0, (4 * lv.res_m - c.mpp) / (2 * lv.res_m)));
       g.drawImage(im, srcX, srcY, srcW, srcH, sx(c, ix0), sy(c, iy1), (ix1 - ix0) / c.mpp, (iy1 - iy0) / c.mpp);
+      g.globalAlpha = 1;
     }
   }
 
@@ -89,6 +97,10 @@ const MAPANI = (() => {
   function drawFocus(g, c, geomId) {
     const fd = LOOK().basemap.focus_dim;
     if (!fd || !fd.enabled || !geomId) return;
+    // deep inside a big place (a country seen at city scale) its coarse outline no longer matches the coast: fade out
+    const [r0, r1] = fd.fade_ratio || [1e9, 2e9], ratio = SCENES.geometry[geomId].width / (W * c.mpp);
+    const k = Math.min(1, Math.max(0, (r1 - ratio) / (r1 - r0)));
+    if (k <= 0) return;
     DIM = DIM || makeCanvas(W, H);
     const d = DIM.getContext('2d');
     d.setTransform(1, 0, 0, 1, 0, 0); d.globalCompositeOperation = 'source-over'; d.filter = 'none';
@@ -97,8 +109,8 @@ const MAPANI = (() => {
     d.globalCompositeOperation = 'destination-out'; d.filter = `blur(${fd.feather_px}px)`;
     d.fillStyle = '#000'; d.fill(polyPath(d, c, SCENES.geometry[geomId]), 'evenodd');
     d.filter = 'none'; d.globalCompositeOperation = 'source-over';
-    g.drawImage(DIM, 0, 0);
-    drawLift(g, c, SCENES.geometry[geomId]);
+    g.save(); g.globalAlpha = k; g.drawImage(DIM, 0, 0);
+    drawLift(g, c, SCENES.geometry[geomId]); g.restore();
   }
 
   // The subject looks raised off the map (r1 Gurugram): a soft shadow falls outside its edge, down-right (light from
@@ -115,7 +127,7 @@ const MAPANI = (() => {
     d.globalCompositeOperation = 'source-over';
     g.drawImage(LIFT, 0, 0);
     if (L.rim_opacity > 0) {
-      g.save(); g.lineJoin = 'round'; g.lineWidth = L.rim_width; g.strokeStyle = `rgba(255,255,255,${L.rim_opacity})`;
+      g.save(); g.lineJoin = 'round'; g.lineWidth = L.rim_width; g.strokeStyle = `rgba(255,255,255,${L.rim_opacity * g.globalAlpha})`; g.globalAlpha = 1;
       g.stroke(path); g.restore();
     }
   }
@@ -158,6 +170,38 @@ const MAPANI = (() => {
     if (a <= 0) return;
     g.save(); g.globalAlpha = a * tint.opacity; g.globalCompositeOperation = tint.blend || 'color';
     g.fillStyle = tint.color; g.fill(polyPath(g, c, SCENES.geometry[L.geom]), 'evenodd'); g.restore();
+  }
+
+  // A counted group's unit (r4: states fill one by one on their names), in look A: translucent colour over the
+  // satellite, a bright glowing edge and a short flash when it arrives; dimmed when the next group takes over, back at
+  // full strength for the recap. outline: true = claimed land (dashed edge only, e.g. Taiwan).
+  function drawFill(g, c, L, t) {
+    if (t < L.in) return;
+    const F = LOOK().fill, col = L.color;
+    let k = EASE.easeOutCubic(Math.min(1, (t - L.in) / F.in_s));
+    if (L.dim_at !== undefined && t > L.dim_at) {
+      let d = 1 - (1 - F.dim_to) * Math.min(1, (t - L.dim_at) / F.dim_s);
+      if (L.undim_at !== undefined && t > L.undim_at) d += (1 - d) * Math.min(1, (t - L.undim_at) / F.dim_s);
+      k *= d;
+    }
+    if (k <= 0) return;
+    const p = polyPath(g, c, SCENES.geometry[L.geom]);
+    g.save(); g.lineJoin = 'round';
+    if (!L.outline) {
+      const flash = Math.max(0, 1 - (t - L.in) / F.flash_s);
+      g.globalAlpha = Math.min(1, k * F.opacity + flash * F.flash_opacity); g.fillStyle = col; g.fill(p, 'evenodd');
+    }
+    g.globalAlpha = k; g.lineWidth = L.width || F.edge_width; g.strokeStyle = col;
+    if (L.dash) g.setLineDash(L.dash);
+    g.shadowColor = rgba(col, F.glow_opacity); g.shadowBlur = F.glow_blur; g.stroke(p);
+    g.restore();
+  }
+
+  function drawOutline(g, c, L, t) {
+    if (t < L.in) return;
+    const O = LOOK().outline, k = Math.min(1, (t - L.in) / O.in_s);
+    g.save(); g.globalAlpha = k * O.opacity; g.lineJoin = 'round'; g.lineWidth = O.width; g.strokeStyle = O.color;
+    g.stroke(polyPath(g, c, SCENES.geometry[L.geom])); g.restore();
   }
 
   // sets font + letter spacing (tokens tracking is in em) on a context
@@ -244,7 +288,7 @@ const MAPANI = (() => {
       if (t >= ln.in) {
         setFont(g, st, px);
         const txt = st.case === 'upper' ? ln.text.toUpperCase() : ln.text;
-        softText(g, typed(txt, t, ln.in, TOKENS.motion.number_in.duration), p.x, y, px, st.color, S.text_fx, 'top');
+        softText(g, typed(txt, t, ln.in, TOKENS.motion.number_in.duration), p.x, y, px, ln.color || st.color, S.text_fx, 'top');
       }
       y += px + gw * toPx;
     });
@@ -295,6 +339,8 @@ const MAPANI = (() => {
     drawBasemap(g, c);
     drawFocus(g, c, shot.focus);
     for (const L of shot.layers) if (L.type === 'tint') drawTint(g, c, L, t);
+    for (const L of shot.layers) if (L.type === 'fill') drawFill(g, c, L, t);
+    for (const L of shot.layers) if (L.type === 'outline') drawOutline(g, c, L, t);
     drawVignette(g);
     for (const L of shot.layers) if (L.type === 'route') drawRoute(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'pin') drawPin(g, c, L, t);

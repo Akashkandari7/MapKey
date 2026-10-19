@@ -70,7 +70,7 @@ class Reviewer:
             S = self.L["stat"]
             world = "X" in layer and shot["kind"] == "map"
             x, y = self.to_px(c, layer["X"], layer["Y"]) if world else (layer["x"], layer["y"])
-            scale = 1 if world else self.T["facecam"]["stat_box"]["size_scale"]
+            scale = 1 if world or shot["kind"] == "map" else self.T["facecam"]["stat_box"]["size_scale"]
             hs = [(ln.get("h_world") / c[2]) if world and ln.get("h_world") else S[ln["style"]]["size"] * scale
                   for ln in layer["lines"]]
             gap = self.T["plan"]["stat_line_gap"] * self.H * ((layer.get("mpp_in", c[2]) / c[2]) if world else 1)
@@ -152,6 +152,22 @@ class Reviewer:
         p = geom_to_3857(shape(it["resolved"]["geometry"])).representative_point()
         return any(l["type"] == "pin" and Point(self.sc["geometry"][l["geom"]]["coords"]).distance(p) < 400
                    for s in shots for l in s.get("layers", []))
+
+    def check_india(self):
+        """India rule: no shape except India's own may cover the Survey of India outline (incl. Aksai Chin,
+        Arunachal, Gilgit-Baltistan, PoK). Measured on the exact geometry the renderer draws."""
+        from shapely.geometry import MultiPolygon, Polygon
+        from pipeline.geo.india import is_india, outline_3857
+        ind = outline_3857()
+        for gid, g in self.sc["geometry"].items():
+            if g["kind"] != "polygon":
+                continue
+            shp = MultiPolygon([Polygon(p[0], p[1:]) for p in g["coords"]]).buffer(0)
+            if is_india(shp, lonlat=False):
+                continue
+            km2 = shp.intersection(ind).area / 1e6 * 0.75  # Web Mercator inflates area ~1.3x at India's latitudes
+            if km2 > 0.5:
+                self.issue("india", "fail", f"'{g['name']}' covers {km2:.1f} km2 of India (SoI outline)", gid=gid)
 
     def check_geo(self):
         for r in self.geo.get("needs_review", []):
@@ -291,7 +307,7 @@ class Reviewer:
 
     def run_checks(self):
         self.issues = []
-        self.check_coverage(); self.check_geo(); self.check_safe_area(); self.check_covers_and_collisions()
+        self.check_india(); self.check_coverage(); self.check_geo(); self.check_safe_area(); self.check_covers_and_collisions()
         self.check_sync(); self.check_pacing(); self.check_camera(); self.check_colour()
         return self.issues
 
@@ -331,6 +347,10 @@ class Reviewer:
             if key in done:
                 continue
             done.add(key)
+            if it["check"] == "india":
+                self.clip_india(it["gid"])
+                self.fixed.append(f"clipped to India's border: {it['msg']}")
+                continue
             if it["check"] == "coverage" and it.get("fixable"):
                 self.add_pin(it["ent"])
                 continue
@@ -382,6 +402,15 @@ class Reviewer:
                 l.update(trial)
                 return True
         return False
+
+    def clip_india(self, gid):
+        from shapely.geometry import MultiPolygon, Polygon
+        from pipeline.geo.india import clip_out
+        g = self.sc["geometry"][gid]
+        shp = clip_out(MultiPolygon([Polygon(p[0], p[1:]) for p in g["coords"]]).buffer(0), lonlat=False)
+        polys = list(getattr(shp, "geoms", [shp]))
+        g["coords"] = [[[[round(x, 1), round(y, 1)] for x, y in ring.coords] for ring in [p.exterior, *p.interiors]]
+                       for p in polys if p.geom_type == "Polygon"]
 
     def add_pin(self, ent_id):
         from shapely.geometry import shape

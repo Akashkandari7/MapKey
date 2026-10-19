@@ -20,7 +20,9 @@ from pipeline.common import ROOT, read_json, sha, write_json
 from pipeline.geo.proj import from_3857
 
 ENGINE = ROOT / "pipeline" / "render"
-LEVELS = [160, 80, 40, 20, 10]   # metres per pixel of the available basemap levels (Sentinel-2 native = 10)
+# metres per pixel of the available basemap levels: NASA Blue Marble tiles (z4-z8) for continent and country scale,
+# then Sentinel-2 (native 10 m) for regions and cities
+LEVELS = [9784, 4892, 2446, 1223, 611, 160, 80, 40, 20, 10]
 MAX_PX = 40e6
 
 
@@ -67,7 +69,27 @@ def imagery_levels(scenes):
     return chosen
 
 
-def grade(src, dst, g):
+def land_alpha(bounds, size):
+    """0-255 mask of land (Natural Earth countries) on a level's pixel grid: on a fine (Sentinel) level only the land
+    is kept, the sea shows the smooth Blue Marble below (single Sentinel scenes leave swath seams and haze on water)."""
+    import numpy as np
+    from rasterio import features
+    from rasterio.transform import from_bounds
+    from pipeline.geo.proj import geom_to_3857
+    from pipeline.plan import geo_layer
+    from shapely.geometry import box
+    x0, y0, x1, y1 = bounds
+    w, h = size
+    c = geo_layer("countries")
+    clip = box(*[v for v in (x0, y0, x1, y1)]).buffer((x1 - x0) * 0.05)
+    shapes = [g for g in (geom_to_3857(gg) for gg in c.geometry) if g.intersects(clip)]
+    if not shapes:
+        return np.zeros((h, w), np.uint8)
+    return features.rasterize([(g.intersection(clip), 255) for g in shapes], out_shape=(h, w),
+                              transform=from_bounds(x0, y0, x1, y1, w, h), fill=0, dtype="uint8")
+
+
+def grade(src, dst, g, land=None):
     """Colour-grade a basemap level for the look: first transfer its Lab mean/std onto the reference's (measured on
     the reels' map pixels, tokens looks.<look>.basemap.grade.color_match), then optional saturation/contrast/brightness."""
     import cv2
@@ -84,7 +106,17 @@ def grade(src, dst, g):
     im = ImageEnhance.Color(im).enhance(g.get("saturation", 1))
     im = ImageEnhance.Contrast(im).enhance(g.get("contrast", 1))
     im = ImageEnhance.Brightness(im).enhance(g.get("brightness", 1))
-    im.save(dst, quality=92)
+    if Path(dst).suffix == ".png":  # empty (no-scene) pixels see through to the coarser level below
+        from PIL import ImageFilter
+        holes = np.asarray(Image.open(src).convert("L")) <= 2
+        a = np.where(holes, 0, 255).astype(np.uint8)
+        if land is not None:
+            a = np.minimum(a, land)
+        alpha = Image.fromarray(a).filter(ImageFilter.MinFilter(5))
+        im.putalpha(alpha.filter(ImageFilter.GaussianBlur(2)))
+        im.save(dst)
+    else:
+        im.save(dst, quality=92)
 
 
 def prepare(ep, scenes_path, tokens):
@@ -98,12 +130,15 @@ def prepare(ep, scenes_path, tokens):
         f.unlink()
     look = tokens["looks"][sc["look"]]
     levels, credits = [], set(sc.get("credits", []))
-    for lv in imagery_levels(sc):
-        path = imagery.for_view(lv["bbox"], lv["res_m"], need=lv["need"])
-        meta = imagery.build(lv["bbox"], lv["res_m"], path)
-        name = f"img/L{lv['res_m']}_{sha(path.name, look['basemap']['grade'])}.jpg"
+    lvls = imagery_levels(sc)
+    for lv in lvls:
+        path, meta = imagery.level(lv["bbox"], lv["res_m"], need=lv["need"])
+        fine = lv["res_m"] < 600 and lv["res_m"] != max(l["res_m"] for l in lvls)  # Sentinel over Blue Marble
+        ext = "png" if fine else "jpg"  # fine levels carry alpha: land only, no gaps
+        name = f"img/L{lv['res_m']}_{sha(path.name, look['basemap']['grade'], 'land')}.{ext}"
         if not (rd / name).exists():
-            grade(path.with_suffix(".jpg"), rd / name, look["basemap"]["grade"])
+            land = land_alpha(meta["bounds_3857"], meta["size"]) if fine and any(l["res_m"] >= 600 for l in lvls) else None
+            grade(path.with_suffix(".jpg"), rd / name, look["basemap"]["grade"], land)
         levels.append({"file": name, "res_m": lv["res_m"], "bounds_3857": meta["bounds_3857"]})
         credits.add(meta["credit"])
     sc["imagery"] = levels

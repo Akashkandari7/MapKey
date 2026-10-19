@@ -59,6 +59,9 @@ def build(bbox, res_m, out, dates=DEFAULT_DATES, per_tile=4, force=False):
     w, h = int(math.ceil((x1 - x0) / res_m)), int(math.ceil((y1 - y0) / res_m))
     if w * h > 60e6:
         raise SystemExit(f"[imagery] {w}x{h} px is too large; use a coarser --res")
+    if res_m >= 80:
+        per_tile = 1  # coarse views: the clearest scene of each tile is enough, and a median of dozens of
+        #               scenes over a whole region would need gigabytes of RAM
     items = search(bbox, dates)
     # keep the clearest few scenes of every MGRS tile that touches the area
     by_tile = {}
@@ -78,7 +81,10 @@ def build(bbox, res_m, out, dates=DEFAULT_DATES, per_tile=4, force=False):
     def read(it):
         with env:
             try:
-                with rasterio.open(it.assets["visual"].href) as src, WarpedVRT(
+                # read the COG's own overview nearest the target resolution (20/40/80/160 m), not the 10 m data:
+                # a 160 m mosaic then moves ~250x fewer bytes (it took 35+ min at full resolution)
+                ovr = int(max(-1, min(3, math.floor(math.log2(res_m / 10)) - 1)))
+                with rasterio.open(it.assets["visual"].href, **({"OVERVIEW_LEVEL": ovr} if ovr >= 0 else {})) as src, WarpedVRT(
                         src, crs="EPSG:3857", transform=grid, width=w, height=h, src_nodata=0, nodata=0,
                         resampling=Resampling.average) as vrt:
                     arr = vrt.read(indexes=[1, 2, 3])
@@ -90,14 +96,23 @@ def build(bbox, res_m, out, dates=DEFAULT_DATES, per_tile=4, force=False):
 
     # 3 scenes at a time: network-bound, and keeps the laptop's CPU mostly free
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(3) as ex:
-        stack = [a for a in ex.map(read, chosen) if a is not None]
-    data = np.stack(stack).astype(np.float32)          # scenes x 3 x h x w
-    valid = data.sum(axis=1, keepdims=True) > 0         # 0,0,0 = outside the scene footprint
-    data = np.where(valid, data, np.nan)
-    med = np.nanmedian(data, axis=0)                    # per-pixel median over the scenes that cover it
-    holes = np.isnan(med).any(axis=0)
-    med = np.nan_to_num(med, nan=0).clip(0, 255).astype(np.uint8)
+    if per_tile == 1:  # mosaic: clearest scene first, later scenes only fill what is still empty (low memory)
+        med = np.zeros((3, h, w), np.uint8)
+        with ThreadPoolExecutor(3) as ex:
+            for arr in ex.map(read, chosen):
+                if arr is not None:
+                    empty = (med.sum(axis=0) == 0) & (arr.sum(axis=0) > 0)
+                    med[:, empty] = arr[:, empty]
+        holes = med.sum(axis=0) == 0
+    else:
+        with ThreadPoolExecutor(3) as ex:
+            stack = [a for a in ex.map(read, chosen) if a is not None]
+        data = np.stack(stack).astype(np.float32)          # scenes x 3 x h x w
+        valid = data.sum(axis=1, keepdims=True) > 0         # 0,0,0 = outside the scene footprint
+        data = np.where(valid, data, np.nan)
+        med = np.nanmedian(data, axis=0)                    # per-pixel median over the scenes that cover it
+        holes = np.isnan(med).any(axis=0)
+        med = np.nan_to_num(med, nan=0).clip(0, 255).astype(np.uint8)
     out.parent.mkdir(parents=True, exist_ok=True)
     from PIL import Image
     Image.fromarray(np.moveaxis(med, 0, -1)).save(out.with_suffix(".jpg"), quality=92)
@@ -126,6 +141,88 @@ def for_view(bbox, res_m, need=None):
             return meta_f.with_suffix("")
     b = [round(v, 3) for v in bbox]
     return CACHE / f"s2_{sha(b, res_m)}"
+
+
+# ---------- country / continent scale: NASA Blue Marble (public domain) ----------
+# Sentinel-2 can't sensibly mosaic a whole country; for views coarser than ~300 m/px the basemap is NASA's Blue Marble
+# (shaded relief + bathymetry), served as Web Mercator tiles by NASA GIBS (no login). NASA imagery is public domain.
+GIBS = ("https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/"
+        "GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg")
+WORLD = 20037508.342789244
+BM_CREDIT = "NASA Blue Marble (GIBS)"
+
+
+def bm_zoom(res_m):
+    """GIBS zoom whose pixel size is closest to res_m (z4 = 9784 ... z8 = 611 m/px; z8 is the finest)."""
+    return int(max(0, min(8, round(math.log2(2 * WORLD / 256 / res_m)))))
+
+
+def bm_res(z):
+    return 2 * WORLD / 256 / 2 ** z
+
+
+def blue_marble(bbox, res_m, out, force=False):
+    """Mosaic of Blue Marble tiles covering bbox (lon/lat) at the zoom matching res_m, cropped to the bbox."""
+    import io
+    from concurrent.futures import ThreadPoolExecutor
+    import requests
+    from PIL import Image
+    out = Path(out)
+    meta_f = out.with_suffix(".json")
+    if meta_f.exists() and out.with_suffix(".jpg").exists() and not force:
+        return json.loads(meta_f.read_text())
+    z = bm_zoom(res_m)
+    r = bm_res(z)
+    (x0, y0), (x1, y1) = lonlat_to_3857(bbox[0], bbox[1]), lonlat_to_3857(bbox[2], bbox[3])
+    px0, px1 = int(math.floor((x0 + WORLD) / r)), int(math.ceil((x1 + WORLD) / r))
+    py0, py1 = int(math.floor((WORLD - y1) / r)), int(math.ceil((WORLD - y0) / r))
+    n = 2 ** z
+    tiles = [(tx, ty) for ty in range(py0 // 256, (py1 - 1) // 256 + 1) for tx in range(px0 // 256, (px1 - 1) // 256 + 1)]
+    tdir = CACHE / "gibs" / str(z)
+    tdir.mkdir(parents=True, exist_ok=True)
+
+    def get(t):
+        tx, ty = t
+        f = tdir / f"{ty}_{tx % n}.jpg"
+        if not f.exists():
+            for attempt in range(3):
+                try:
+                    resp = requests.get(GIBS.format(z=z, y=ty, x=tx % n), timeout=30)
+                    resp.raise_for_status()
+                    f.write_bytes(resp.content)
+                    break
+                except requests.RequestException:
+                    if attempt == 2:
+                        raise
+                    import time
+                    time.sleep(3 * (attempt + 1))  # a dropped connection (Wi-Fi blip) gets a moment to come back
+        return t, Image.open(io.BytesIO(f.read_bytes())).convert("RGB")
+
+    canvas = Image.new("RGB", (px1 - px0, py1 - py0))
+    with ThreadPoolExecutor(3) as ex:  # laptop rule: a few connections at a time
+        for (tx, ty), im in ex.map(get, tiles):
+            canvas.paste(im, (tx * 256 - px0, ty * 256 - py0))
+    canvas.save(out.with_suffix(".jpg"), quality=92)
+    meta = {"bounds_3857": [px0 * r - WORLD, WORLD - py1 * r, px1 * r - WORLD, WORLD - py0 * r],
+            "bbox_lonlat": list(bbox), "res_m": res_m, "zoom": z, "size": list(canvas.size), "credit": BM_CREDIT}
+    meta_f.write_text(json.dumps(meta, indent=1))
+    print(f"[imagery] Blue Marble z{z}: {len(tiles)} tiles -> {out.with_suffix('.jpg')}")
+    return meta
+
+
+def level(bbox, res_m, need=None):
+    """One basemap level: Blue Marble for coarse levels (>= 600 m/px), Sentinel-2 otherwise. Returns (path, meta)."""
+    if res_m >= 600:
+        need = need or bbox
+        for meta_f in sorted(CACHE.glob("bm_*.json")):
+            m = json.loads(meta_f.read_text())
+            b = m["bbox_lonlat"]
+            if m["res_m"] == res_m and b[0] <= need[0] and b[1] <= need[1] and b[2] >= need[2] and b[3] >= need[3]:
+                return meta_f.with_suffix(""), m
+        path = CACHE / f"bm_{sha([round(v, 3) for v in bbox], res_m)}"
+        return path, blue_marble(bbox, res_m, path)
+    path = for_view(bbox, res_m, need=need)
+    return path, build(bbox, res_m, path)
 
 
 def main():

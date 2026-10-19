@@ -107,6 +107,10 @@ Fixed problems trigger a re-render and a second check (max 2 rounds). Read `work
   announced stations' real locations, checked for consistency. If neither is reliable, the line is not drawn and
   only its places are labelled. Station-based lines are always flagged in the review.
 - Labels say places the way the narrator said them; numbers appear on the number word.
+- **Counted groups.** "23 provinces" fills every admin-1 unit of that type; "4 municipalities: Beijing, Shanghai,
+  ..." fills exactly the places named after the count, each on its word, in one colour per group. Land the country
+  claims but doesn't hold (Taiwan for China) gets a dashed outline, never a fill. If the total is said again at the
+  end, a recap lists every group in its colour.
 
 ## 6. Change the style
 
@@ -127,7 +131,7 @@ face-cam punch-ins, grade). The renderer reads nothing else. Three looks were me
 ## 8. Credits and licences
 
 Map data: © OpenStreetMap contributors (ODbL); DataMeet India boundaries (CC0 / CC BY 4.0); Natural Earth (public
-domain); GeoNames (CC BY 4.0). Imagery: contains modified Copernicus Sentinel data. Fonts: Inter, Poppins, Playfair
+domain); GeoNames (CC BY 4.0). Imagery: contains modified Copernicus Sentinel data; NASA Blue Marble (public domain). Fonts: Inter, Poppins, Playfair
 Display (SIL OFL). Render runtime adapted from [ReelMimic](https://github.com/edenfunf/reelmimic) (MIT). Details:
 [ASSETS_LICENSES.md](ASSETS_LICENSES.md), [data/geo/SOURCES.md](data/geo/SOURCES.md). The on-screen credit line is
 added automatically.

@@ -5,6 +5,7 @@ Every third-party thing a rendered reel or this repo depends on. Geo datasets ar
 | Item | Used for | Source | Licence | On-screen credit |
 |---|---|---|---|---|
 | Copernicus Sentinel-2 L2A true colour (via AWS open data, Element84 Earth Search catalogue) | Satellite basemap (median of clear scenes) | https://registry.opendata.aws/sentinel-2-l2a-cogs/ | Copernicus Sentinel data terms: free for any use incl. commercial, with attribution | "Contains modified Copernicus Sentinel data <years>" (added automatically) |
+| NASA Blue Marble, shaded relief + bathymetry (via NASA GIBS tiles) | Basemap for country / continent views | https://gibs.earthdata.nasa.gov | NASA imagery: public domain (no copyright in the US) | "NASA Blue Marble (GIBS)" (added automatically) |
 | OpenStreetMap (Nominatim, Overpass) | Metro/rail lines, roads, neighbourhoods, city boundaries | https://www.openstreetmap.org | ODbL 1.0 | "© OpenStreetMap contributors" (added automatically when used) |
 | DataMeet India boundaries, Natural Earth, GeoNames | Countries, Indian states (Survey of India outline), places | see `data/geo/SOURCES.md` | CC0 / CC BY 4.0 / public domain | not required on screen (CC BY credit kept in SOURCES.md) |
 | Inter (via @fontsource/inter) | Look A text (stand-in for SF Pro) | https://rsms.me/inter | SIL OFL 1.1 | none needed |

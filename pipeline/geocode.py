@@ -235,7 +235,8 @@ def simplify_for_view(geom):
 
 
 def pack(geom, source, method, confidence, name, extra=None):
-    g = simplify_for_view(geom)
+    from pipeline.geo.india import clip_out
+    g = clip_out(simplify_for_view(geom))  # India rule: re-clip after simplifying (it moves borders a little)
     lp = geom if geom.geom_type == "Point" else geom.representative_point()
     if geom.geom_type in ("Polygon", "MultiPolygon"):
         # polylabel-ish: the representative point is always inside; good enough for labels
@@ -638,6 +639,7 @@ def resolve_route(db, ent, resolved_places, offline=False, area=None, area_geom=
 
 
 def context_for(db, resolved):
+    from pipeline.geo.india import clip_out
     """Polygons the renderer needs around the story: the countries touched + their neighbours, and Indian states."""
     pts = [Point(r["label_point"]) for r in resolved.values() if r]
     if not pts:
@@ -645,7 +647,7 @@ def context_for(db, resolved):
     c = db.layer("countries")
     hit = c[c.geometry.intersects(unary_union(pts).buffer(0.01))]
     near = c[c.geometry.intersects(unary_union(list(hit.geometry)).buffer(2.0))] if len(hit) else hit
-    ctx = {"countries": [{"a3": r.ADM0_A3, "name": r.NAME, "geometry": mapping(simplify_for_view(r.geometry))}
+    ctx = {"countries": [{"a3": r.ADM0_A3, "name": r.NAME, "geometry": mapping(r.geometry if r.ADM0_A3 == "IND" else clip_out(simplify_for_view(r.geometry)))}
                          for _, r in near.iterrows()]}
     if "IND" in set(hit.ADM0_A3):
         a = db.layer("admin1")
