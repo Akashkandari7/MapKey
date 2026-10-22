@@ -59,9 +59,12 @@ def build(bbox, res_m, out, dates=DEFAULT_DATES, per_tile=4, force=False):
     w, h = int(math.ceil((x1 - x0) / res_m)), int(math.ceil((y1 - y0) / res_m))
     if w * h > 60e6:
         raise SystemExit(f"[imagery] {w}x{h} px is too large; use a coarser --res")
-    if res_m >= 80:
-        per_tile = 1  # coarse views: the clearest scene of each tile is enough, and a median of dozens of
-        #               scenes over a whole region would need gigabytes of RAM
+    mosaic = res_m >= 80
+    if mosaic:
+        # coarse views: no median (dozens of scenes over a whole region would need gigabytes of RAM); a mosaic of the
+        # clearest scenes instead, 3 per tile: one scene covers only part of its tile (orbit swath edge), and the
+        # holes it leaves showed the blurry level below as hard-edged patches
+        per_tile = 3
     items = search(bbox, dates)
     # keep the clearest few scenes of every MGRS tile that touches the area
     by_tile = {}
@@ -96,12 +99,23 @@ def build(bbox, res_m, out, dates=DEFAULT_DATES, per_tile=4, force=False):
 
     # 3 scenes at a time: network-bound, and keeps the laptop's CPU mostly free
     from concurrent.futures import ThreadPoolExecutor
-    if per_tile == 1:  # mosaic: clearest scene first, later scenes only fill what is still empty (low memory)
+    if mosaic:  # clearest scene first, later scenes only fill what is still empty (low memory)
         med = np.zeros((3, h, w), np.uint8)
         with ThreadPoolExecutor(3) as ex:
             for arr in ex.map(read, chosen):
                 if arr is not None:
-                    empty = (med.sum(axis=0) == 0) & (arr.sum(axis=0) > 0)
+                    have, new = med.sum(axis=0) > 0, arr.sum(axis=0) > 0
+                    both = have & new
+                    # scenes from different days differ in haze and sun: match each new scene's colour to the mosaic
+                    # where they overlap (per-channel mean/std), so the patches it fills don't show as blocks
+                    if both.sum() > 2000:
+                        a = arr.astype(np.float32)
+                        for ch in range(3):
+                            ma, sa = a[ch][both].mean(), a[ch][both].std() + 1e-3
+                            mm, sm = med[ch][both].mean(), med[ch][both].std() + 1e-3
+                            a[ch] = np.where(new, (a[ch] - ma) / sa * sm + mm, 0)
+                        arr = np.clip(a, 1, 255).astype(np.uint8) * new
+                    empty = ~have & new
                     med[:, empty] = arr[:, empty]
         holes = med.sum(axis=0) == 0
     else:

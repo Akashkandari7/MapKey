@@ -53,7 +53,8 @@ if (args.encode) {
   console.log(`encoding ${n} frames → ${out}${audio ? ' with ' + audio : ''}`);
   await run('ffmpeg', ['-y', '-loglevel', 'error', '-stats', '-framerate', String(fps), '-i', `${FRAMES_DIR}/f%05d.jpg`,
     ...(audio ? ['-i', audio, '-map', '0:v', '-map', '1:a', '-c:a', 'aac', '-b:a', '192k', '-shortest'] : []),
-    '-c:v', 'libx264', '-preset', 'slow', '-crf', '17', ...TV_RANGE, '-movflags', '+faststart', out]);
+    // Mapani: an intermediate (assemble.py encodes the final): fast preset, a lower crf keeps the quality
+    '-c:v', 'libx264', '-preset', 'fast', '-crf', '15', ...TV_RANGE, '-movflags', '+faststart', out]);
   console.log('wrote ' + out);
   process.exit(0);
 }

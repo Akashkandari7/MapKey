@@ -76,6 +76,9 @@ const MAPANI = (() => {
     const levels = (SCENES.imagery || []).slice().sort((a, b) => b.res_m - a.res_m);
     for (const lv of levels) {
       if (lv.res_m > c.mpp * 4 && lv !== levels[0]) continue;  // much coarser than needed and not the base: skip
+      // a finer level is only guaranteed to cover views it was fetched for (render_stage: mpp < 2 x res): past that
+      // it showed as a sharp rectangle over the coarser level (q2 flow map at 387 m/px over the 160 m level)
+      if (lv !== levels[0] && c.mpp >= 2 * lv.res_m) continue;
       const im = IMG[lv.file], [bx0, by0, bx1, by1] = lv.bounds_3857, r = (bx1 - bx0) / im.width;
       const vx0 = c.x - W / 2 * c.mpp, vx1 = c.x + W / 2 * c.mpp, vy0 = c.y - H / 2 * c.mpp, vy1 = c.y + H / 2 * c.mpp;
       const ix0 = Math.max(bx0, vx0), ix1 = Math.min(bx1, vx1), iy0 = Math.max(by0, vy0), iy1 = Math.min(by1, vy1);
@@ -83,7 +86,7 @@ const MAPANI = (() => {
       const srcX = (ix0 - bx0) / r, srcY = (by1 - iy1) / r, srcW = (ix1 - ix0) / r, srcH = (iy1 - iy0) / r;
       g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
       // a finer level fades in as the camera zooms towards it (no hard switch, no visible edge of its area)
-      g.globalAlpha = lv === levels[0] ? 1 : Math.min(1, Math.max(0, (4 * lv.res_m - c.mpp) / (2 * lv.res_m)));
+      g.globalAlpha = lv === levels[0] ? 1 : Math.min(1, Math.max(0, (2 * lv.res_m - c.mpp) / (0.6 * lv.res_m)));
       g.drawImage(im, srcX, srcY, srcW, srcH, sx(c, ix0), sy(c, iy1), (ix1 - ix0) / c.mpp, (iy1 - iy0) / c.mpp);
       g.globalAlpha = 1;
     }
@@ -402,12 +405,14 @@ const MAPANI = (() => {
     for (const L of shot.layers) if (L.type === 'tint') drawTint(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'fill') drawFill(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'outline') drawOutline(g, c, L, t);
+    if (window.STORY_MAP_HOOK) STORY_MAP_HOOK('under', g, c, shot, t);  // story mode: heat maps, region fills
     drawVignette(g);
     for (const L of shot.layers) if (L.type === 'route') drawRoute(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'pin') drawPin(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'title') drawTitle(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'stat') drawStat(g, c, L, t);
     for (const L of shot.layers) if (L.type === 'picture') drawPicture(g, L, t);
+    if (window.STORY_MAP_HOOK) STORY_MAP_HOOK('over', g, c, shot, t);   // story mode: tags, callouts, 3D labels
     drawCredit(g);
   }
 
@@ -484,7 +489,8 @@ const MAPANI = (() => {
     }]]);
   }
 
-  return { setup, shot, camAt };
+  // story.js draws its shots with the same camera maths, text treatment and image cache
+  return { setup, shot, camAt, drawMapShot, EASE, sx, sy, polyPath, setFont, softText, shade, rgba, IMG };
 })();
 
 window.ENGINE = { setup: MAPANI.setup };

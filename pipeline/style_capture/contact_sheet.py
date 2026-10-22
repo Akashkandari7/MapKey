@@ -28,7 +28,8 @@ def font(size):
 def kind_at(segs, t):
     for g in segs:
         if g["start"] <= t < g["end"]:
-            return "map" if g["kind"] == "other" else g["kind"]
+            k = "map" if g["kind"] == "other" else g["kind"]
+            return k if k in KIND_COL else "broll"  # story shots (image, news, cta, follow) share the b-roll colour
     return "map"
 
 

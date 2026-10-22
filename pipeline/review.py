@@ -454,11 +454,72 @@ class Reviewer:
         return rep
 
 
+class StoryReviewer(Reviewer):
+    """Story mode (shots of photos, clippings, maps): the India rule on every map shape, every shot has its picture,
+    every overlay line fits the frame, no shot drags; news clippings and AI pictures are listed for a human look."""
+    WIDTH_K = {"st_impact": 0.74, "st_bold": 0.7, "st_semi": 0.64, "st_num": 0.5, "st_body": 0.55, "st_body_b": 0.57,
+               "st_script": 0.5, "st_serif": 0.6}
+
+    def run_checks(self):
+        self.check_india()
+        self.check_geo()
+        self.check_assets()
+        self.check_text_fit()
+        self.check_story_pacing()
+        self.list_sources()
+
+    def check_assets(self):
+        for s in self.sc["shots"]:
+            need = {"image": "src", "news": "src", "follow": "avatar_src"}.get(s["kind"])
+            if need and not s.get(need):
+                lvl = "warn" if s["kind"] == "follow" else "fail"
+                self.issue("assets", lvl, f"{s['id']} ({s['kind']}, {s['start']:.1f}s): no picture - a placeholder shows")
+
+    def line_width(self, preset, ln, layer):
+        P = self.T["story"]["text"]["presets"][preset]
+        r = P["roles"].get(ln["role"], {})
+        size = r.get("size", 60) * layer.get("scale", 1)
+        txt = ln.get("text", "")
+        return len(txt) * size * self.WIDTH_K.get(r.get("font"), 0.62)
+
+    def check_text_fit(self):
+        self.too_wide = []
+        lim = self.W - 2 * 60
+        for s in self.sc["shots"]:
+            for L in s.get("layers", []):
+                if L.get("type") != "text" or L.get("preset") == "caption_box":
+                    continue
+                w = max(self.line_width(L["preset"], ln, L) for ln in L["lines"])
+                if w > lim:
+                    self.too_wide.append((s, L, lim / w))
+                    self.issue("text_fit", "warn", f"{s['id']}: '{' / '.join(l['text'] for l in L['lines'])}' is wider than the frame")
+
+    def check_story_pacing(self):
+        for s in self.sc["shots"]:
+            if s["kind"] in ("image", "map", "news") and s["end"] - s["start"] > 7.5:
+                self.issue("pacing", "warn", f"{s['id']} holds {s['end'] - s['start']:.1f}s on one picture (reference: 2.5-6 s)")
+
+    def list_sources(self):
+        for s in self.sc["shots"]:
+            if s["kind"] == "news":
+                self.issue("sources", "info", f"{s['id']} {s['start']:.1f}s news clipping: {s.get('url')} - check it says what the voice says")
+
+    def apply_fixes(self):
+        fixed = []
+        for s, L, k in getattr(self, "too_wide", []):
+            if L.get("locked"):
+                continue
+            L["scale"] = round(L.get("scale", 1) * k * 0.97, 3)
+            fixed.append(f"{s['id']}: text scaled to {L['scale']:.2f} to fit the frame")
+        return fixed
+
+
 def review(ep, fix=True, rerender=None, max_rounds=2):
     """Check -> fix scenes.json -> re-render (callback) -> check again, up to max_rounds; report the final state."""
     all_fixed, rounds = [], 0
+    R = StoryReviewer if read_json(Path(ep) / "scenes.json").get("mode") == "story" else Reviewer
     while rounds < max_rounds:
-        rv = Reviewer(ep)
+        rv = R(ep)
         rv.run_checks()
         rounds += 1
         fixed = rv.apply_fixes() if fix else []
@@ -469,7 +530,7 @@ def review(ep, fix=True, rerender=None, max_rounds=2):
         print(f"[review] round {rounds}: fixed {len(fixed)} issue(s)" + (", re-rendering" if rerender else ""))
         if rerender:
             rerender()
-    final = Reviewer(ep)
+    final = R(ep)
     final.run_checks()
     final.fixed = list(dict.fromkeys(all_fixed))  # a locked layer is reported once, not once per round
     return final.report(rounds)

@@ -160,6 +160,28 @@ class Transcriber:
             if spans:
                 segments = splice(segments, fb, spans)
                 models.append(FALLBACK)
+        # third pass: a stretch still missing (both models dropped it in full-length decoding, seen on a cut-and-padded
+        # remake narration: 14 s gone) is cut out with a little context and transcribed on its own
+        left = bad_spans(pcm, segments)
+        for a, b in left:
+            a0, b0 = max(0.0, a - 1.0), min(dur, b + 1.0)
+            best = None
+            for name in (PRIMARY, FALLBACK):
+                part, _ = run_model(self.get(name), pcm[int(a0 * SR):int(b0 * SR)], lang, name)
+                for s in part:  # back to narration time
+                    s["start"], s["end"] = round(s["start"] + a0, 3), round(s["end"] + a0, 3)
+                    for w in s["words"]:
+                        w["start"], w["end"] = round(w["start"] + a0, 3), round(w["end"] + a0, 3)
+                n = sum(1 for s in part for w in s["words"] if a <= w["start"] < b)
+                if best is None or n > best[0]:
+                    best = (n, part, name)
+                if n >= MIN_WORDS_PER_WIN * (b - a) / WIN_S:
+                    break
+            had = sum(1 for s in segments for w in s["words"] if a <= w["start"] < b)
+            if best and best[0] > had:
+                segments = splice(segments, best[1], [[a, b]])
+                spans.append([a, b])
+                models.append(best[2] + ":span")
         words = [dict(w, seg=i) for i, s in enumerate(segments) for w in s["words"]]
         q = quality(words, dur)
         # one drawn-out word ("insaaane") is normal speech; only too-few-words windows mean speech is missing

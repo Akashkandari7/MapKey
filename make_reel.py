@@ -1,6 +1,8 @@
-"""Mapani: narration audio -> finished 9:16 map-explainer reel.
+"""Mapani: narration audio -> finished 9:16 explainer reel.
 
+    python make_reel.py --audio inputs/ep12            # one folder: audio.mp3 + news.txt + facecam.mp4 (optional)
     python make_reel.py --audio inputs/audio/ep12.mp3 [--episode ep12] [--out output/ep12.mp4]
+    python make_reel.py --audio ... --mode map               # the older map-only format (one long map + face-cam)
     python make_reel.py --episode ep12 --from render        # re-run from a stage after editing work/ep12/scenes.json
     python make_reel.py --episode ep12 --only geocode       # run one stage
 
@@ -16,6 +18,42 @@ from pathlib import Path
 from pipeline.common import ROOT, read_json, write_json
 
 STAGES = ["transcribe", "entities", "geocode", "plan", "render", "review", "captions", "mix", "export"]
+# story mode (default, the @adarshh.gupta format): Gemini storyboards the beats, pictures are made/fetched, and the
+# review runs on the plan before the (slow) render
+STORY_STAGES = ["transcribe", "entities", "geocode", "storyboard", "visuals", "plan", "review", "render", "captions",
+                "mix", "export"]
+
+
+def stage_storyboard(ep, a):
+    from pipeline.storyboard import build
+    clip, cam = find_facecam(ep, a), None
+    if clip:  # where the face really is on screen (an edited source reel shows it only in parts)
+        from pipeline.assemble import clip_offset
+        from pipeline.facecam import windows
+        cache = ep / "facecam_windows.json"
+        key = [str(clip), clip.stat().st_mtime_ns]
+        if cache.exists() and read_json(cache).get("key") == key:
+            cam = read_json(cache)["windows"]
+        else:
+            off = clip_offset(clip, next(ep.glob("narration.*")))[0]
+            cam = windows(clip, off)
+            write_json(cache, {"key": key, "offset": off, "windows": cam})
+    res = build(ep, a.story_model, facecam=cam)
+    write_json(ep / "storyboard.json", res)
+    kinds = {}
+    for b in res["beats"]:
+        kinds[b["visual"]] = kinds.get(b["visual"], 0) + 1
+    return f"{len(res['beats'])} beats {kinds}"
+
+
+def stage_visuals(ep, a):
+    from pipeline.visuals import build
+    res = build(ep, find_news=a.find_news, workers=a.workers)
+    write_json(ep / "visuals.json", res)
+    kinds = {}
+    for v in res.values():
+        kinds[v["kind"]] = kinds.get(v["kind"], 0) + 1
+    return f"{kinds}"
 
 
 def stage_transcribe(ep, a):
@@ -48,12 +86,22 @@ def stage_geocode(ep, a):
 
 
 def stage_plan(ep, a):
+    if a.mode == "story":
+        from pipeline.plan import validate
+        from pipeline.story_plan import StoryPlanner, brand_handle
+        sc = StoryPlanner(ep, read_json(ROOT / "style/tokens.json"), a.handle or brand_handle(ep)).plan()
+        validate(sc)
+        write_json(ep / "scenes.json", sc)
+        kinds = {}
+        for s in sc["shots"]:
+            kinds[s["kind"]] = kinds.get(s["kind"], 0) + 1
+        return f"{len(sc['shots'])} shots {kinds}"
     from pipeline.plan import Planner, validate
     sc = Planner(ep, read_json(ROOT / "style/tokens.json")).plan()
     validate(sc)
     write_json(ep / "scenes.json", sc)
     from pipeline.pictures import add as add_pictures  # needs the written plan: cards go where no text is
-    n_pics = 0 if a.offline else add_pictures(ep)
+    n_pics = 0 if a.offline else add_pictures(ep)  # map mode only
     return f"{len(sc['shots'])} shots, {sum(len(s.get('layers', [])) for s in sc['shots'])} layers, {n_pics} pictures"
 
 
@@ -67,7 +115,8 @@ def stage_review(ep, a):
     from pipeline.review import review
     if a.no_review:
         return "skipped (--no-review)"
-    rep = review(ep, fix=True, rerender=lambda: render(ep, workers=a.workers))
+    # story mode reviews the plan before rendering: its fixes need no re-render
+    rep = review(ep, fix=True, rerender=None if a.mode == "story" else lambda: render(ep, workers=a.workers))
     return (f"{len(rep['fixed'])} fixed, {len(rep['fails'])} problems left, {len(rep['warnings'])} warnings "
             f"-> work/{ep.name}/review.md")
 
@@ -82,11 +131,32 @@ def stage_captions(ep, a):
 def find_facecam(ep, a):
     if a.facecam:
         return Path(a.facecam)
+    vids = (".mp4", ".mov", ".mkv")
+    # one folder per episode (inputs/<ep>/facecam.mp4), or the older inputs/audio/<ep>_facecam.mp4
+    d = ROOT / "inputs" / ep.name
+    cams = sorted(d.glob("*facecam*.*")) + sorted(d.glob("*cam*.*")) if d.is_dir() else []
+    hit = next((p for p in cams if p.suffix.lower() in vids), None)
+    if hit:
+        return hit
     for d in (ROOT / "inputs" / "audio", ROOT / "inputs" / "facecam"):
-        hit = next((p for p in sorted(d.glob(f"{ep.name}_facecam.*")) if p.suffix.lower() in (".mp4", ".mov", ".mkv")), None)
+        hit = next((p for p in sorted(d.glob(f"{ep.name}_facecam.*")) if p.suffix.lower() in vids), None)
         if hit:
             return hit
     return None
+
+
+AUDIO_EXT = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg")
+
+
+def episode_folder(path):
+    """--audio inputs/ep13 (a folder): the narration inside it (audio.* / narration.* / the only audio file), and the
+    folder's name as the episode. Its news.txt and facecam.* are picked up by the later stages."""
+    d = Path(path)
+    files = [p for p in sorted(d.iterdir()) if p.suffix.lower() in AUDIO_EXT]
+    pick = next((p for p in files if p.stem.lower() in ("audio", "narration", "voice", "vo")), files[0] if files else None)
+    if pick is None:
+        raise SystemExit(f"no audio file ({', '.join(AUDIO_EXT)}) in {d}")
+    return pick, d.name
 
 
 def stage_mix(ep, a):
@@ -108,6 +178,7 @@ def stage_export(ep, a):
 
 
 RUN = {"transcribe": stage_transcribe, "entities": stage_entities, "geocode": stage_geocode, "plan": stage_plan,
+       "storyboard": stage_storyboard, "visuals": stage_visuals,
        "render": stage_render, "review": stage_review, "captions": stage_captions, "mix": stage_mix, "export": stage_export}
 
 
@@ -116,9 +187,13 @@ def main():
     ap.add_argument("--audio", help="narration file (mp3/wav/m4a)")
     ap.add_argument("--episode", help="episode name; default = audio file name")
     ap.add_argument("--out", help="final mp4 (default output/<episode>.mp4)")
-    ap.add_argument("--from", dest="start", choices=STAGES, help="start at this stage")
-    ap.add_argument("--only", choices=STAGES, help="run just this stage")
-    ap.add_argument("--to", choices=STAGES, default="export", help="stop after this stage")
+    ap.add_argument("--mode", choices=["story", "map"], default="story", help="story (default) or the map-only format")
+    ap.add_argument("--from", dest="start", choices=STORY_STAGES, help="start at this stage")
+    ap.add_argument("--only", choices=STORY_STAGES, help="run just this stage")
+    ap.add_argument("--to", choices=STORY_STAGES, default="export", help="stop after this stage")
+    ap.add_argument("--story-model", default="gemini-3.1-pro-preview", help="Gemini model for the storyboard")
+    ap.add_argument("--find-news", action="store_true", help="search the web for news clippings (else inputs/<ep>/news.txt)")
+    ap.add_argument("--handle", help="creator handle for watermark + end card (default inputs/brand/brand.json)")
     ap.add_argument("--lang", help="force transcription language, e.g. hi")
     ap.add_argument("--model", default="gemini-3.8-flash", help="Gemini model for entities")
     ap.add_argument("--offline", action="store_true", help="geocode without OpenStreetMap lookups")
@@ -129,16 +204,25 @@ def main():
     a = ap.parse_args()
     if not a.audio and not a.episode:
         ap.error("give --audio (new episode) or --episode (existing work folder)")
-    name = a.episode or Path(a.audio).stem
+    if a.audio and Path(a.audio).is_dir():
+        audio, folder_name = episode_folder(a.audio)
+        a.audio = str(audio)
+        name = a.episode or folder_name
+    else:
+        name = a.episode or Path(a.audio).stem
     ep = ROOT / "work" / name
     ep.mkdir(parents=True, exist_ok=True)
+    order = STORY_STAGES if a.mode == "story" else STAGES
+    for st in (a.start, a.only, a.to):
+        if st and st not in order:
+            ap.error(f"stage {st} is not part of --mode {a.mode}")
     if a.only:
         todo = [a.only]
     else:
-        first = STAGES.index(a.start) if a.start else (0 if a.audio else None)
+        first = order.index(a.start) if a.start else (0 if a.audio else None)
         if first is None:
             ap.error("--episode without --audio needs --from or --only")
-        todo = STAGES[first:STAGES.index(a.to) + 1]
+        todo = order[first:order.index(a.to) + 1]
     for s in todo:
         t0 = time.time()
         print(f"== {s}")

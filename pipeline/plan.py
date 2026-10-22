@@ -49,11 +49,13 @@ SCHEMA = {
         "shots": {"type": "array", "minItems": 1, "items": {
             "type": "object", "required": ["id", "kind", "start", "end"],
             "properties": {
-                "kind": {"enum": ["map", "facecam", "broll"]},
+                "kind": {"enum": ["map", "facecam", "broll", "image", "news", "cta", "follow", "graphic"]},
                 "start": {"type": "number"}, "end": {"type": "number"},
                 "camera": {"type": "array", "items": {"type": "object", "required": ["t", "x", "y", "mpp"]}},
                 "layers": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {
-                    "type": {"enum": ["route", "tint", "fill", "outline", "pin", "title", "stat", "button", "picture"]}}}},
+                    "type": {"enum": ["route", "tint", "fill", "outline", "pin", "title", "stat", "button", "picture",
+                                      "region", "tag", "region_label", "callout", "text", "sticker", "flow", "stamp",
+                                      "infobox"]}}}},
                 "punches": {"type": "array", "items": {"type": "object", "required": ["t", "scale"]}}}}},
     },
 }

@@ -114,8 +114,38 @@ def choose_punches(shot, clip, clip_off, F):
             continue
         if any(abs(p["t"] - c) < P["clear_of_clip_cuts_s"] for c in own):
             continue
-        kept.append(dict(p, scale=P["scales"][len(kept) % len(P["scales"])]))
+        kept.append(p if shot.get("keep_scales") else dict(p, scale=P["scales"][len(kept) % len(P["scales"])]))
     return kept, own
+
+
+def content_band(clip, t0, t1, R, n=6):
+    """(top, bottom) of the picture area as fractions of the frame height: an edited source (the creator's own reel)
+    often frames the face-cam with flat dark bands above / below; those rows are dark and nearly uniform in every
+    sampled frame."""
+    import cv2
+    cap = cv2.VideoCapture(str(clip))
+    rows = []
+    for t in np.linspace(t0, max(t0, t1 - 0.05), n):
+        cap.set(cv2.CAP_PROP_POS_MSEC, max(0, t) * 1000)
+        ok, f = cap.read()
+        if ok:
+            g = cv2.cvtColor(cv2.resize(f, (180, 320)), cv2.COLOR_BGR2GRAY).astype(np.float32)
+            rows.append((g.mean(1) < R["dark_luma"]) & (g.std(1) < R["flat_std"]))
+    cap.release()
+    if not rows:
+        return 0.0, 1.0
+    flat = np.mean(np.array(rows), axis=0) >= 0.5  # flat in most sampled frames (hands / captions pass through)
+    h = len(flat)
+
+    def band(order):  # the longest run from the edge that is >= 85 % flat rows (a stray edge row doesn't break it)
+        best, n_flat = 0, 0
+        for k, i in enumerate(order, 1):
+            n_flat += flat[i]
+            if n_flat / k >= 0.85:
+                best = k
+        return best if best >= 8 else 0
+    top, bot = band(range(h)), band(range(h - 1, -1, -1))
+    return top / h, (h - bot) / h
 
 
 def zoom_filter(shot, clip, clip_off, W, H, fps, F):
@@ -132,6 +162,12 @@ def zoom_filter(shot, clip, clip_off, W, H, fps, F):
         fx, fy = face_center(clip, shot["start"] + t0 - clip_off, shot["start"] + t1 - clip_off)
         segs.append((t0, t1, p["scale"], fx, fy))
     push = F["push_per_shot"]
+    # reframe: the person fills the frame (no empty dark band from the source's own layout)
+    top, bot = shot.get("_band") or content_band(clip, shot["start"] - clip_off, shot["end"] - clip_off, F["reframe"])
+    base = min(F["reframe"]["max_scale"], 1 / max(0.3, bot - top)) if bot - top < 0.94 else 1.0
+    if base > 1.0:
+        print(f"[assemble] face-cam: picture area {top:.2f}-{bot:.2f} of the frame, reframed x{base:.2f}")
+        segs = [(a, b, sc * base, fx, fy) for a, b, sc, fx, fy in segs]
 
     def nest(f):  # if(lt(t,t1), seg0, if(lt(t,t2), seg1, ...))
         expr = f(segs[-1])
@@ -142,11 +178,22 @@ def zoom_filter(shot, clip, clip_off, W, H, fps, F):
     fxs, fys = nest(lambda sg: f"{sg[3]:.4f}"), nest(lambda sg: f"{sg[4]:.4f}")
     W2, H2 = W * 2, H * 2
     g = F["grade"]
+    # the crop stays inside the picture area (top..bot), with the face at face_y of the frame where it can
+    y_lo, y_hi = f"{top:.4f}*ih", f"({bot:.4f}*ih-{H2})"
+    look = ""
+    if g.get("teal_orange"):  # cinematic: teal in the shadows, warm highlights
+        k = g["teal_orange"]
+        look += f",colorbalance=rs={-k:.3f}:bs={k:.3f}:rh={k:.3f}:bh={-k:.3f}"
+    if g.get("sharpen"):
+        look += f",unsharp=5:5:{g['sharpen']}:5:5:0"
+    if g.get("grain"):
+        look += f",noise=alls={g['grain']}:allf=t"
     return (f"scale=w='trunc({W2}*({z})/2)*2':h='trunc({H2}*({z})/2)*2':eval=frame:flags=bicubic,"
-            f"crop={W2}:{H2}:x='max(0,min(iw-{W2},({fxs})*iw-{W2}/2))':y='max(0,min(ih-{H2},({fys})*ih-{F['face_y']}*{H2}))',"
+            f"crop={W2}:{H2}:x='max(0,min(iw-{W2},({fxs})*iw-{W2}/2))':"
+            f"y='max({y_lo},min({y_hi},max(0,min(ih-{H2},({fys})*ih-{F['face_y']}*{H2}))))',"
             f"scale={W}:{H}:flags=lanczos,"
             f"eq=contrast={g['contrast']}:saturation={g['saturation']}:gamma={g['gamma']},"
-            f"vignette=angle={g['vignette']}")
+            f"vignette=angle={g['vignette']}{look}")
 
 
 def loudnorm(src, dst, target):
@@ -169,6 +216,31 @@ def measure_lufs(path):
     return float(re.search(r"I:\s+(-?[\d.]+)", tail).group(1)), float(re.search(r"Peak:\s+(-?[\d.]+)", tail).group(1))
 
 
+def story_mix(ep, sc, tokens, nar, tmp):
+    """Narration + music bed (ducked under the voice) + transition effects, then the whole mix to -14 LUFS."""
+    from pipeline import sound
+    A = tokens["story"]["audio"]
+    parts = sound.build(ep, sc, tokens)
+    ins, chain = ["-i", str(nar)], []
+    if parts.get("music"):
+        mn = tmp / "music_norm.wav"
+        loudnorm(parts["music"], mn, {"target_lufs": tokens["audio"]["target_lufs"] + A["music_db"] + 9,
+                                      "true_peak_max": -3})
+        ins += ["-i", str(mn)]
+        chain.append(f"[1:a][0:a]sidechaincompress=threshold=0.04:ratio=4:attack=25:release=450:makeup=1[md]")
+    ins += ["-i", str(parts["sfx"])]
+    k = len(ins) // 2 - 1
+    srcs = "[0:a]" + ("[md]" if parts.get("music") else "") + f"[{k}:a]"
+    n = 3 if parts.get("music") else 2
+    chain.append(f"{srcs}amix=inputs={n}:duration=first:normalize=0[mix]")
+    mix = tmp / "story_mix.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *ins, "-filter_complex", ";".join(chain), "-map", "[mix]",
+                    "-ar", "48000", "-ac", "2", str(mix)], check=True)
+    final = tmp / "story_mix_norm.wav"
+    loudnorm(mix, final, tokens["audio"])
+    return final
+
+
 def assemble(ep, facecam=None, music=None, out=None, raw=None):
     ep = Path(ep)
     tokens = read_json(ROOT / "style/tokens.json")
@@ -189,6 +261,10 @@ def assemble(ep, facecam=None, music=None, out=None, raw=None):
                     str(tmp / "narration_cut.wav")], check=True)
     loudnorm(tmp / "narration_cut.wav", nar, tokens["audio"])
     audio_in, audio_filter, amap = ["-i", str(nar)], None, None
+    if sc.get("mode") == "story":
+        nar = story_mix(ep, sc, tokens, nar, tmp)
+        audio_in = ["-i", str(nar)]
+        music = None  # the story bed is already in the mix
 
     # ---- face-cam placement ----
     cam_shots = [s for s in sc["shots"] if s["kind"] == "facecam"]
@@ -205,6 +281,12 @@ def assemble(ep, facecam=None, music=None, out=None, raw=None):
         inputs += ["-i", str(facecam)]
         parts, prev = [], "base"
         rd = ep / "render" / "out"
+        # one framing for the whole clip: the picture area measured on every face-cam shot, median (a shot where
+        # hands or a caption cross the dark band must not get a different crop)
+        bands = [content_band(facecam, s["start"] - off, s["end"] - off, tokens["facecam"]["reframe"]) for s in cam_shots]
+        band = (float(np.median([b[0] for b in bands])), float(np.median([b[1] for b in bands])))
+        for s in cam_shots:
+            s["_band"] = band
         for i, s in enumerate(cam_shots):
             cs, ce = s["start"] - off, s["end"] - off  # clip-time window for this shot
             # the clip may begin a moment after the shot (the planner cuts on the narration's sentence, the clip starts

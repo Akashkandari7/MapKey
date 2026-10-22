@@ -1,14 +1,32 @@
-# MapKey (Mapani): narration audio → finished map-explainer reel
+# MapKey (Mapani): narration audio → finished explainer reel
 
-Give it a voiceover (Hindi / Hinglish / English) and it returns a 1080×1920 Instagram reel in the style of the
-reference page: satellite map, the place being talked about lifted off the map, metro lines and roads drawing on,
-labels and stats typing in on the spoken word, and your face-cam outro spliced in with punch-in zooms.
+Give it a voiceover (Hindi / Hinglish / English) and it returns a 1080×1920 Instagram reel.
+
+**Story mode (default)**, the @adarshh.gupta format: a new picture every 2.5-6 s that shows exactly what is said
+(cinematic AI photos, real news clippings with the spoken line highlighted, maps that dive in from the clouds with
+places coloured and labelled), bold headlines and count-up numbers on the word, dissolves / zoom-blur transitions,
+a music bed with whooshes and booms, a torn-paper comment question and an Instagram Follow end card.
+Spec: [style/STORY_STYLE.md](style/STORY_STYLE.md).
+
+**Map mode** (`--mode map`), the older format: one long satellite map with lines drawing on, labels and stats, and
+your face-cam outro. Spec: [REEL_PIPELINE.md](REEL_PIPELINE.md), [style/STYLE.md](style/STYLE.md).
 
 ```
-python make_reel.py --audio inputs/audio/ep12.mp3
+python make_reel.py --audio inputs/ep12                           # story mode, one folder per episode
+python make_reel.py --audio inputs/ep12 --find-news               # ...and search the web for news clippings
 ```
 
-The full spec is in [REEL_PIPELINE.md](REEL_PIPELINE.md); the measured style in [style/STYLE.md](style/STYLE.md).
+One folder per episode, `inputs/ep12/`:
+
+| File | What |
+|---|---|
+| `audio.mp3` (any audio file) | the narration |
+| `news.txt` (optional) | article links, one per line, used for the news beats in order (no links + `--find-news`: searched, each hit checked against the voice) |
+| `facecam.mp4` (optional) | your on-camera clip; placed by matching its sound to the narration |
+
+Once per creator: `inputs/brand/avatar.jpg` (end-card photo), `inputs/brand/brand.json` (`{"handle": "@name"}`),
+optional `inputs/brand/profile.jpg` (dimmed end-card backdrop). Stages: transcribe, entities, geocode, **storyboard**, **visuals**, plan, review, render, mix, export; edit
+`work/<ep>/storyboard.json` (prompts, visuals, text) and re-run `--from visuals`.
 
 ---
 
